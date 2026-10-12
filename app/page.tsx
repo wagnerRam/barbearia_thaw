@@ -50,7 +50,7 @@ export default function Home() {
               src={
                 darkMode
                   ? "/assets/home-logo-dark.png"
-                  : "/assets/home-logo-ligth.png"
+                  : "/assets/home-logo-light.png"
               }
               alt="ThawBlack — Barbearia & Escola"
               className="home-logo"
