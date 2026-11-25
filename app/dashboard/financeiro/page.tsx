@@ -1,94 +1,179 @@
 
+
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
+import { createClient } from "@/utils/supabase/client";
+
 type Appointment = {
+
     id: string | number;
+
     customer: string;
+
     service: string;
+
     professional: string;
+
     date: string;
+
     price: number;
+
     status: string;
+
 };
 
 type TransactionType = "receita" | "despesa";
+
 type TransactionOrigin = "automático" | "manual";
 
 type Transaction = {
+
     id: string;
+
     description: string;
+
     category: string;
+
     type: TransactionType;
+
     origin: TransactionOrigin;
+
     amount: number;
+
     date: string;
+
 };
 
-const APPOINTMENTS_KEY = "thawblack_appointments_v1";
-const FINANCE_KEY = "thawblack_finance_manual_v1";
+const supabase = createClient();
 
 function getToday() {
+
     const now = new Date();
+
     const year = now.getFullYear();
+
     const month = String(now.getMonth() + 1).padStart(2, "0");
+
     const day = String(now.getDate()).padStart(2, "0");
 
     return `${year}-${month}-${day}`;
+
 }
 
 const currency = (value: number) =>
+
     value.toLocaleString("pt-BR", {
+
         style: "currency",
+
         currency: "BRL",
+
     });
 
 export default function FinanceiroPage() {
+
     const today = getToday();
 
     const [appointments, setAppointments] = useState<Appointment[]>([]);
+
     const [manualTransactions, setManualTransactions] = useState<Transaction[]>([]);
+
     const [ready, setReady] = useState(false);
 
     const [typeFilter, setTypeFilter] = useState("todos");
+
     const [periodFilter, setPeriodFilter] = useState("todos");
+
     const [search, setSearch] = useState("");
 
     const [showForm, setShowForm] = useState(false);
+
     const [newType, setNewType] = useState<TransactionType>("despesa");
+
     const [description, setDescription] = useState("");
+
     const [category, setCategory] = useState("Materiais");
+
     const [amount, setAmount] = useState("");
+
     const [date, setDate] = useState(today);
 
-    // Carrega e atualiza os dados financeiros do navegador.
+    // Carrega os dados financeiros do Supabase.
+
     useEffect(() => {
-        function loadData() {
+
+        async function loadData() {
+
             try {
-                const savedAppointments = localStorage.getItem(APPOINTMENTS_KEY);
-                const savedManualTransactions = localStorage.getItem(FINANCE_KEY);
+                const { data: { session }, error: sessionError } =
+                    await supabase.auth.getSession();
 
-                const parsedAppointments = savedAppointments
-                    ? JSON.parse(savedAppointments)
-                    : [];
+                console.log("[ThawBlack] Verificação de sessão:", {
+                    autenticado: !!session,
+                    usuario: session?.user?.id ?? null,
+                    erro: sessionError?.message ?? null,
+                });
+                const [paymentsResult, expensesResult, revenuesResult] =
+                    await Promise.all([
+                        supabase
+                            .from("payments")
+                            .select("id, appointment_id, amount, status, paid_at, created_at")
+                            .eq("status", "paid"),
+                        supabase
+                            .from("expenses")
+                            .select("id, description, category, amount, expense_date"),
+                        supabase
+                            .from("manual_revenues")
+                            .select("id, description, category, amount, revenue_date"),
+                    ]);
 
-                const parsedManual = savedManualTransactions
-                    ? JSON.parse(savedManualTransactions)
-                    : [];
+                if (paymentsResult.error) throw paymentsResult.error;
+                if (expensesResult.error) throw expensesResult.error;
+                if (revenuesResult.error) throw revenuesResult.error;
+                const payments = (paymentsResult.data || []).map((item) => ({
+                    id: item.id,
+                    customer: "Agendamento",
+                    service: "Serviço",
+                    professional: "",
+                    date: item.paid_at || item.created_at,
+                    price: Number(item.amount),
+                    status: "Concluído",
+                }));
 
-                setAppointments(
-                    Array.isArray(parsedAppointments) ? parsedAppointments : []
+                const expenses: Transaction[] = (expensesResult.data || []).map(
+                    (item) => ({
+                        id: `expense-${item.id}`,
+                        description: item.description,
+                        category: item.category || "Outros",
+                        type: "despesa",
+                        origin: "manual",
+                        amount: Number(item.amount),
+                        date: item.expense_date,
+                    })
                 );
 
-                setManualTransactions(
-                    Array.isArray(parsedManual) ? parsedManual : []
+                const revenues: Transaction[] = (revenuesResult.data || []).map(
+                    (item) => ({
+                        id: `revenue-${item.id}`,
+                        description: item.description,
+                        category: item.category || "Produtos",
+                        type: "receita",
+                        origin: "manual",
+                        amount: Number(item.amount),
+                        date: item.revenue_date,
+                    })
                 );
 
-                console.log(
-                    "[ThawBlack Financeiro] Agendamentos carregados:",
-                    parsedAppointments
-                );
+                setAppointments(payments);
+                setManualTransactions([...revenues, ...expenses]);
+                console.log("[ThawBlack Financeiro] Dados carregados:", {
+                    payments,
+                    expenses,
+                    revenues,
+                });
+
             } catch (error) {
                 console.error("Erro ao carregar dados financeiros:", error);
                 setAppointments([]);
@@ -97,44 +182,8 @@ export default function FinanceiroPage() {
                 setReady(true);
             }
         }
-
-        function handleVisibilityChange() {
-            if (document.visibilityState === "visible") {
-                loadData();
-            }
-        }
-
         loadData();
-
-        window.addEventListener("focus", loadData);
-        window.addEventListener("pageshow", loadData);
-        window.addEventListener("storage", loadData);
-        document.addEventListener("visibilitychange", handleVisibilityChange);
-
-        return () => {
-            window.removeEventListener("focus", loadData);
-            window.removeEventListener("pageshow", loadData);
-            window.removeEventListener("storage", loadData);
-            document.removeEventListener(
-                "visibilitychange",
-                handleVisibilityChange
-            );
-        };
     }, []);
-
-    // Mantém os lançamentos manuais salvos no navegador.
-    useEffect(() => {
-        if (!ready) return;
-
-        try {
-            localStorage.setItem(
-                FINANCE_KEY,
-                JSON.stringify(manualTransactions)
-            );
-        } catch (error) {
-            console.error("Erro ao salvar lançamentos financeiros:", error);
-        }
-    }, [manualTransactions, ready]);
 
     // Converte atendimentos concluídos em receitas automáticas.
     const transactions = useMemo<Transaction[]>(() => {
@@ -149,7 +198,6 @@ export default function FinanceiroPage() {
                 amount: Number(item.price) || 0,
                 date: String(item.date).slice(0, 10),
             }));
-
         return [
             ...automaticTransactions,
             ...manualTransactions,
@@ -161,16 +209,12 @@ export default function FinanceiroPage() {
         return transactions.filter((item) => {
             const matchesType =
                 typeFilter === "todos" || item.type === typeFilter;
-
             const matchesSearch =
                 item.description.toLowerCase().includes(search.toLowerCase()) ||
                 item.category.toLowerCase().includes(search.toLowerCase());
-
             const itemDate = new Date(`${item.date}T12:00:00`);
             const now = new Date();
-
             let matchesPeriod = true;
-
             if (periodFilter === "mes") {
                 matchesPeriod =
                     itemDate.getMonth() === now.getMonth() &&
@@ -184,7 +228,6 @@ export default function FinanceiroPage() {
             if (periodFilter === "ano") {
                 matchesPeriod = itemDate.getFullYear() === now.getFullYear();
             }
-
             return matchesType && matchesSearch && matchesPeriod;
         });
     }, [transactions, typeFilter, periodFilter, search, today]);
@@ -194,11 +237,9 @@ export default function FinanceiroPage() {
         const receitas = filteredTransactions
             .filter((item) => item.type === "receita")
             .reduce((total, item) => total + item.amount, 0);
-
         const despesas = filteredTransactions
             .filter((item) => item.type === "despesa")
             .reduce((total, item) => total + item.amount, 0);
-
         const services = filteredTransactions.filter(
             (item) =>
                 item.type === "receita" &&
@@ -210,7 +251,6 @@ export default function FinanceiroPage() {
                 ? services.reduce((total, item) => total + item.amount, 0) /
                 services.length
                 : 0;
-
         return {
             receitas,
             despesas,
@@ -222,46 +262,46 @@ export default function FinanceiroPage() {
     // Dados do gráfico por dia da semana.
     const chartData = useMemo(() => {
         const days = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
-
         return days.map((day, index) => {
             const weekday = (index + 1) % 7;
-
             const receita = filteredTransactions
                 .filter((item) => {
                     const itemDate = new Date(`${item.date}T12:00:00`);
-
                     return (
                         itemDate.getDay() === weekday &&
                         item.type === "receita"
                     );
                 })
                 .reduce((total, item) => total + item.amount, 0);
-
             const despesa = filteredTransactions
                 .filter((item) => {
                     const itemDate = new Date(`${item.date}T12:00:00`);
-
                     return (
                         itemDate.getDay() === weekday &&
                         item.type === "despesa"
                     );
                 })
                 .reduce((total, item) => total + item.amount, 0);
-
             return { day, receita, despesa };
         });
     }, [filteredTransactions]);
-
+    
     const maxChartValue = Math.max(
+
         ...chartData.flatMap((item) => [
+
             item.receita,
+
             item.despesa,
+
         ]),
+
         100
+
     );
 
-    // Cadastra receitas e despesas manuais.
-    function handleAddTransaction(e: FormEvent<HTMLFormElement>) {
+    // Cadastra receitas e despesas diretamente no Supabase.
+    async function handleAddTransaction(e: FormEvent<HTMLFormElement>) {
         e.preventDefault();
 
         const numericAmount = Number(amount.replace(",", "."));
@@ -275,38 +315,51 @@ export default function FinanceiroPage() {
             return;
         }
 
-        const newTransaction: Transaction = {
-            id: crypto.randomUUID(),
-            description: description.trim(),
-            category,
-            type: newType,
-            origin: "manual",
-            amount: numericAmount,
-            date,
-        };
+        try {
+            const table = newType === "receita" ? "manual_revenues" : "expenses";
+            const dateColumn = newType === "receita" ? "revenue_date" : "expense_date";
 
-        setManualTransactions((current) => [
-            newTransaction,
-            ...current,
-        ]);
+            const { data, error } = await supabase
+                .from(table)
+                .insert({
+                    description: description.trim(),
+                    category,
+                    amount: numericAmount,
+                    [dateColumn]: date,
+                })
+                .select("id, description, category, amount")
+                .single();
 
-        setDescription("");
-        setAmount("");
-        setCategory(newType === "receita" ? "Produtos" : "Materiais");
-        setDate(today);
-        setShowForm(false);
+            if (error) throw error;
+
+            const newTransaction: Transaction = {
+                id: `${newType === "receita" ? "revenue" : "expense"}-${data.id}`,
+                description: data.description,
+                category: data.category || (newType === "receita" ? "Produtos" : "Outros"),
+                type: newType,
+                origin: "manual",
+                amount: Number(data.amount),
+                date,
+            };
+
+            setManualTransactions((current) => [newTransaction, ...current]);
+            setDescription("");
+            setAmount("");
+            setCategory(newType === "receita" ? "Produtos" : "Materiais");
+            setDate(today);
+            setShowForm(false);
+        } catch (error) {
+            console.error("Erro ao salvar lançamento financeiro:", error);
+            alert("Não foi possível salvar o lançamento. Verifique sua conexão e se você está logado como administrador.");
+        }
     }
 
     function formatDate(value: string) {
         if (!value) return "-";
-
         const dateValue = new Date(`${value.slice(0, 10)}T12:00:00`);
-
         if (Number.isNaN(dateValue.getTime())) return "-";
-
         return dateValue.toLocaleDateString("pt-BR");
     }
-
     if (!ready) {
         return (
             <div className="min-h-screen bg-[var(--dashboard-bg)] p-8 text-[var(--dashboard-text)]">
@@ -325,11 +378,9 @@ export default function FinanceiroPage() {
                         <p className="mb-1 text-sm opacity-50">
                             Gestão financeira
                         </p>
-
                         <h1 className="text-2xl font-semibold sm:text-3xl">
                             Financeiro
                         </h1>
-
                         <p className="mt-2 text-sm opacity-60">
                             Acompanhe receitas, despesas e resultados da barbearia.
                         </p>
@@ -413,12 +464,10 @@ export default function FinanceiroPage() {
                                 <label className="mb-2 block text-sm opacity-70">
                                     Tipo de lançamento
                                 </label>
-
                                 <select
                                     value={newType}
                                     onChange={(e) => {
                                         const value = e.target.value as TransactionType;
-
                                         setNewType(value);
                                         setCategory(
                                             value === "receita" ? "Produtos" : "Materiais"
@@ -430,7 +479,6 @@ export default function FinanceiroPage() {
                                     <option value="despesa">Despesa</option>
                                 </select>
                             </div>
-
                             <div>
                                 <label className="mb-2 block text-sm opacity-70">
                                     Descrição
@@ -444,7 +492,6 @@ export default function FinanceiroPage() {
                                     className="w-full rounded-lg border border-[var(--dashboard-border)] bg-[var(--dashboard-bg)] p-3 text-sm outline-none focus:border-[#C9A227]"
                                 />
                             </div>
-
                             <div>
                                 <label className="mb-2 block text-sm opacity-70">
                                     Categoria
@@ -473,7 +520,6 @@ export default function FinanceiroPage() {
                                     )}
                                 </select>
                             </div>
-
                             <div>
                                 <label className="mb-2 block text-sm opacity-70">
                                     Valor (R$)
@@ -490,12 +536,10 @@ export default function FinanceiroPage() {
                                     className="w-full rounded-lg border border-[var(--dashboard-border)] bg-[var(--dashboard-bg)] p-3 text-sm outline-none focus:border-[#C9A227]"
                                 />
                             </div>
-
                             <div>
                                 <label className="mb-2 block text-sm opacity-70">
                                     Data
                                 </label>
-
                                 <input
                                     required
                                     type="date"
@@ -504,7 +548,6 @@ export default function FinanceiroPage() {
                                     className="w-full rounded-lg border border-[var(--dashboard-border)] bg-[var(--dashboard-bg)] p-3 text-sm outline-none"
                                 />
                             </div>
-
                             <div className="flex items-end">
                                 <button
                                     type="submit"
@@ -524,18 +567,15 @@ export default function FinanceiroPage() {
                             <h2 className="text-lg font-semibold">
                                 Movimentação financeira
                             </h2>
-
                             <p className="mt-1 text-xs opacity-50">
                                 Comparativo de receitas e despesas por dia da semana.
                             </p>
                         </div>
-
                         <div className="flex gap-4 text-xs">
                             <span className="flex items-center gap-2">
                                 <span className="size-2 rounded-full bg-emerald-500" />
                                 Receitas
                             </span>
-
                             <span className="flex items-center gap-2">
                                 <span className="size-2 rounded-full bg-red-400" />
                                 Despesas
@@ -560,7 +600,6 @@ export default function FinanceiroPage() {
                                             )}%`,
                                         }}
                                     />
-
                                     <div
                                         title={`Despesas: ${currency(item.despesa)}`}
                                         className="w-3 rounded-t-sm bg-red-400 transition-all sm:w-6"
@@ -572,7 +611,6 @@ export default function FinanceiroPage() {
                                         }}
                                     />
                                 </div>
-
                                 <span className="text-xs opacity-50">
                                     {item.day}
                                 </span>
@@ -588,7 +626,6 @@ export default function FinanceiroPage() {
                             <h2 className="text-lg font-semibold">
                                 Histórico financeiro
                             </h2>
-
                             <p className="mt-1 text-xs opacity-50">
                                 Consulte todas as movimentações da barbearia.
                             </p>
@@ -601,7 +638,6 @@ export default function FinanceiroPage() {
                                 placeholder="Buscar lançamento..."
                                 className="rounded-lg border border-[var(--dashboard-border)] bg-[var(--dashboard-bg)] px-3 py-2 text-sm outline-none focus:border-[#C9A227]"
                             />
-
                             <select
                                 value={periodFilter}
                                 onChange={(e) => setPeriodFilter(e.target.value)}
@@ -612,7 +648,6 @@ export default function FinanceiroPage() {
                                 <option value="ano">Este ano</option>
                                 <option value="todos">Todo o período</option>
                             </select>
-
                             <select
                                 value={typeFilter}
                                 onChange={(e) => setTypeFilter(e.target.value)}
@@ -624,7 +659,6 @@ export default function FinanceiroPage() {
                             </select>
                         </div>
                     </div>
-
                     <div className="overflow-x-auto">
                         <table className="w-full min-w-[650px] text-left text-sm">
                             <thead className="bg-[var(--dashboard-muted)] text-xs uppercase opacity-70">
@@ -646,20 +680,17 @@ export default function FinanceiroPage() {
                                         <td className="px-5 py-4 font-medium">
                                             {item.description}
                                         </td>
-
                                         <td className="px-5 py-4 opacity-70">
                                             {item.category}
                                         </td>
-
                                         <td className="px-5 py-4 opacity-70">
                                             {formatDate(item.date)}
                                         </td>
-
                                         <td className="px-5 py-4">
                                             <span
                                                 className={`rounded-full px-2.5 py-1 text-xs ${item.origin === "automático"
-                                                        ? "bg-blue-500/10 text-blue-400"
-                                                        : "bg-[#C9A227]/10 text-[#C9A227]"
+                                                    ? "bg-blue-500/10 text-blue-400"
+                                                    : "bg-[#C9A227]/10 text-[#C9A227]"
                                                     }`}
                                             >
                                                 {item.origin === "automático"
@@ -667,11 +698,10 @@ export default function FinanceiroPage() {
                                                     : "Manual"}
                                             </span>
                                         </td>
-
                                         <td
                                             className={`px-5 py-4 text-right font-semibold ${item.type === "receita"
-                                                    ? "text-emerald-500"
-                                                    : "text-red-400"
+                                                ? "text-emerald-500"
+                                                : "text-red-400"
                                                 }`}
                                         >
                                             {item.type === "receita" ? "+" : "-"}
@@ -679,7 +709,6 @@ export default function FinanceiroPage() {
                                         </td>
                                     </tr>
                                 ))}
-
                                 {filteredTransactions.length === 0 && (
                                     <tr>
                                         <td
@@ -693,12 +722,10 @@ export default function FinanceiroPage() {
                             </tbody>
                         </table>
                     </div>
-
                     <div className="border-t border-[var(--dashboard-border)] p-4 text-xs opacity-50">
                         {filteredTransactions.length} movimentação(ões) encontrada(s).
                     </div>
                 </section>
-
                 <p className="text-center text-xs opacity-40">
                     ThawBlack • Gestão financeira
                 </p>
@@ -724,16 +751,13 @@ function StatCard({
         <article className="rounded-xl border border-[var(--dashboard-border)] bg-[var(--dashboard-panel)] p-5 transition duration-200 hover:-translate-y-0.5">
             <div className="mb-5 flex items-center justify-between gap-3">
                 <p className="text-sm opacity-70">{title}</p>
-
                 <span
                     className={`flex size-10 shrink-0 items-center justify-center rounded-lg bg-[var(--dashboard-muted)] text-sm font-semibold ${color}`}
                 >
                     {icon}
                 </span>
             </div>
-
             <p className="text-2xl font-semibold">{value}</p>
-
             <p className="mt-2 text-xs opacity-50">{detail}</p>
         </article>
     );
