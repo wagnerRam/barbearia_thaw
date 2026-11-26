@@ -1,44 +1,54 @@
 
 "use client";
 
+import { useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { createClient } from "../../utils/supabase/client";
 
 const menuItems = [
   { label: "Dashboard", icon: "⌂", path: "/dashboard" },
-  {
-    label: "Agendamentos",
-    icon: "▦",
-    path: "/dashboard/agendamentos",
-  },
+  { label: "Agendamentos", icon: "▦", path: "/dashboard/agendamentos" },
   { label: "Clientes", icon: "♙", path: "/dashboard/clientes" },
   { label: "Serviços", icon: "✂", path: "/dashboard/servicos" },
-  {
-    label: "Profissionais",
-    icon: "♧",
-    path: "/dashboard/profissionais",
-  },
+  { label: "Profissionais", icon: "♧", path: "/dashboard/profissionais" },
   { label: "Financeiro", icon: "R$", path: "/dashboard/financeiro" },
   { label: "Relatórios", icon: "▤", path: "/dashboard/relatorios" },
-  {
-    label: "Configurações",
-    icon: "⚙",
-    path: "/dashboard/configuracoes",
-  },
+  { label: "Configurações", icon: "⚙", path: "/dashboard/configuracoes" },
 ];
 
 type Props = {
   activeItem?: string;
-  onNavigate?: (item: string) => void;
   lightMode: boolean;
 };
 
 export default function DashboardSidebar({
   activeItem,
-  onNavigate,
   lightMode,
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
+  const supabase = createClient();
+
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
+
+  async function handleLogout() {
+    if (loggingOut) return;
+
+    setLoggingOut(true);
+    setLogoutError("");
+
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      setLogoutError("Não foi possível sair. Tente novamente.");
+      setLoggingOut(false);
+      return;
+    }
+
+    router.replace("/login");
+    router.refresh();
+  }
 
   return (
     <aside
@@ -66,18 +76,13 @@ export default function DashboardSidebar({
             pathname === item.path ||
             (item.label === "Agendamentos" &&
               pathname.startsWith("/dashboard/agendamentos")) ||
-            (!pathname.startsWith("/dashboard/") &&
-              item.label === "Dashboard") ||
             (activeItem === item.label && pathname === "/dashboard");
 
           return (
             <button
               key={item.label}
               type="button"
-              onClick={() => {
-                onNavigate?.(item.label);
-                router.push(item.path);
-              }}
+              onClick={() => router.push(item.path)}
               aria-current={active ? "page" : undefined}
               className={`flex items-center gap-3 rounded-lg px-4 py-3 text-left text-sm transition ${
                 active
@@ -102,6 +107,22 @@ export default function DashboardSidebar({
           lightMode ? "border-[#D8D3C7]" : "border-[#3B3B3F]"
         }`}
       >
+        {logoutError && (
+          <p className="mb-3 text-xs text-red-500">
+            {logoutError}
+          </p>
+        )}
+
+        <button
+          type="button"
+          onClick={handleLogout}
+          disabled={loggingOut}
+          className="mb-5 flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left text-sm text-red-500 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span className="w-6 text-center text-base">↪</span>
+          {loggingOut ? "Saindo..." : "Sair"}
+        </button>
+
         <p className="text-xs opacity-50">
           ThawBlack © {new Date().getFullYear()}
         </p>

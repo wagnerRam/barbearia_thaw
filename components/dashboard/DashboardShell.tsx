@@ -2,20 +2,9 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import DashboardSidebar from "./DashboardSidebar";
 import DashboardHeader from "./DashboardHeader";
-
-const routes: Record<string, string> = {
-  Dashboard: "/dashboard",
-  Agendamentos: "/dashboard/agendamentos",
-  Clientes: "/dashboard/clientes",
-  Serviços: "/dashboard/servicos",
-  Profissionais: "/dashboard/profissionais",
-  Financeiro: "/dashboard/financeiro",
-  Relatórios: "/dashboard/relatorios",
-  Configurações: "/dashboard/configuracoes",
-};
 
 const labels: Record<string, string> = {
   clientes: "Clientes",
@@ -33,7 +22,6 @@ export default function DashboardShell({
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
 
   const [lightMode, setLightMode] = useState(false);
   const [themeLoaded, setThemeLoaded] = useState(false);
@@ -73,9 +61,6 @@ export default function DashboardShell({
         <DashboardSidebar
           activeItem={activeItem}
           lightMode={lightMode}
-          onNavigate={(item) =>
-            router.push(routes[item] ?? "/dashboard")
-          }
         />
       </aside>
 

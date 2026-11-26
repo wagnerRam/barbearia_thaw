@@ -3,101 +3,61 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-
 import { createClient } from "@/utils/supabase/client";
 
 type Appointment = {
-
     id: string | number;
-
     customer: string;
-
     service: string;
-
     professional: string;
-
     date: string;
-
     price: number;
-
     status: string;
-
 };
 
 type TransactionType = "receita" | "despesa";
-
 type TransactionOrigin = "automático" | "manual";
-
 type Transaction = {
-
     id: string;
-
     description: string;
-
     category: string;
-
     type: TransactionType;
-
     origin: TransactionOrigin;
-
     amount: number;
-
     date: string;
-
 };
 
 const supabase = createClient();
 
 function getToday() {
-
     const now = new Date();
-
     const year = now.getFullYear();
-
     const month = String(now.getMonth() + 1).padStart(2, "0");
-
     const day = String(now.getDate()).padStart(2, "0");
-
     return `${year}-${month}-${day}`;
-
 }
 
 const currency = (value: number) =>
 
     value.toLocaleString("pt-BR", {
-
         style: "currency",
-
         currency: "BRL",
-
     });
 
 export default function FinanceiroPage() {
 
     const today = getToday();
-
     const [appointments, setAppointments] = useState<Appointment[]>([]);
-
     const [manualTransactions, setManualTransactions] = useState<Transaction[]>([]);
-
     const [ready, setReady] = useState(false);
-
     const [typeFilter, setTypeFilter] = useState("todos");
-
     const [periodFilter, setPeriodFilter] = useState("todos");
-
     const [search, setSearch] = useState("");
-
     const [showForm, setShowForm] = useState(false);
-
     const [newType, setNewType] = useState<TransactionType>("despesa");
-
     const [description, setDescription] = useState("");
-
     const [category, setCategory] = useState("Materiais");
-
     const [amount, setAmount] = useState("");
-
     const [date, setDate] = useState(today);
 
     // Carrega os dados financeiros do Supabase.
@@ -287,17 +247,11 @@ export default function FinanceiroPage() {
     }, [filteredTransactions]);
     
     const maxChartValue = Math.max(
-
         ...chartData.flatMap((item) => [
-
             item.receita,
-
             item.despesa,
-
         ]),
-
         100
-
     );
 
     // Cadastra receitas e despesas diretamente no Supabase.

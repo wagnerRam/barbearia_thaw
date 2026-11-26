@@ -60,7 +60,7 @@ export default function ProfessionalPage() {
             type="button"
             className="back-button"
             onClick={() => {
-              window.location.href = "/agendamento/servico";
+              window.location.href = "/agendamento/servicos";
             }}
             aria-label="Voltar para serviços"
           >
