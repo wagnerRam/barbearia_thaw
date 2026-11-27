@@ -121,6 +121,8 @@ export default function AgendamentosPage() {
   const [selectedDate, setSelectedDate] = useState("");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [revenueToday, setRevenueToday] = useState(0);
+  const [paymentAppointment, setPaymentAppointment] = useState<Appointment | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "pix" | "debit" | "credit">("pix");
 
   const loadAppointments = useCallback(async () => {
     setReady(false);
@@ -278,6 +280,45 @@ export default function AgendamentosPage() {
     setUpdatingId(null);
   }
 
+  async function confirmPaymentAndComplete() {
+    if (!paymentAppointment) return;
+
+    const appointment = paymentAppointment;
+    setUpdatingId(appointment.id);
+    setLoadingError("");
+
+    const { data, error } = await supabase.rpc(
+      "record_appointment_payment_and_complete",
+      {
+        p_appointment_id: appointment.id,
+        p_method: paymentMethod,
+      }
+    );
+
+    if (error || !data?.success) {
+      console.error("Erro ao registrar pagamento e concluir atendimento:", error ?? data);
+      setLoadingError(
+        data?.message ||
+          error?.message ||
+          "Não foi possível registrar o pagamento. O atendimento continua em andamento."
+      );
+      setUpdatingId(null);
+      return;
+    }
+
+    setAppointments((current) =>
+      current.map((item) =>
+        item.id === appointment.id
+          ? { ...item, status: "Concluído" }
+          : item
+      )
+    );
+
+    setRevenueToday((current) => current + Number(data.amount ?? appointment.price));
+    setPaymentAppointment(null);
+    setUpdatingId(null);
+  }
+
   if (!ready) {
     return (
       <main className="appointments-page">
@@ -422,6 +463,36 @@ export default function AgendamentosPage() {
         }
         .appointments-page .notice {
           margin-top: 16px; color: var(--muted); font-size: 12px;
+        }
+        .appointments-page .modal-backdrop {
+          position: fixed; inset: 0; z-index: 1000;
+          display: grid; place-items: center; padding: 18px;
+          background: rgba(0, 0, 0, .72);
+        }
+        .appointments-page .payment-modal {
+          width: min(100%, 460px); padding: 24px;
+          border: 1px solid var(--border); border-radius: 14px;
+          background: var(--surface); color: var(--text);
+          box-shadow: 0 24px 80px rgba(0, 0, 0, .4);
+        }
+        .appointments-page .payment-modal h2 {
+          margin: 0 0 8px; font-size: 22px;
+        }
+        .appointments-page .payment-modal .modal-field {
+          display: grid; gap: 8px; margin-top: 18px;
+        }
+        .appointments-page .payment-modal .modal-label {
+          color: var(--muted); font-size: 13px; font-weight: 600;
+        }
+        .appointments-page .payment-modal .payment-value {
+          font-size: 26px; font-weight: 700; color: var(--accent);
+        }
+        .appointments-page .payment-modal .modal-actions {
+          display: flex; justify-content: flex-end; flex-wrap: wrap;
+          gap: 10px; margin-top: 24px;
+        }
+        .appointments-page .payment-modal .primary:disabled {
+          opacity: .55; cursor: wait;
         }
         @media (max-width: 700px) {
           .appointments-page { padding: 22px 14px; }
@@ -613,9 +684,11 @@ export default function AgendamentosPage() {
                           type="button"
                           className="secondary"
                           disabled={updatingId === item.id}
-                          onClick={() =>
-                            void changeStatus(item.id, "Concluído")
-                          }
+                          onClick={() => {
+                            alert("O botão Concluir foi acionado!");
+                            setPaymentMethod("pix");
+                            setPaymentAppointment(item);
+                          }}
                         >
                           Concluir
                         </button>
@@ -637,6 +710,83 @@ export default function AgendamentosPage() {
           )}
         </div>
       </section>
+
+      {paymentAppointment && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && updatingId === null) {
+              setPaymentAppointment(null);
+            }
+          }}
+        >
+          <section
+            className="payment-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-modal-title"
+          >
+            <h2 id="payment-modal-title">Registrar pagamento</h2>
+            <p className="muted">
+              Confirme o recebimento para concluir este atendimento.
+            </p>
+
+            <div className="modal-field">
+              <span className="modal-label">Cliente</span>
+              <strong>{paymentAppointment.customer}</strong>
+            </div>
+
+            <div className="modal-field">
+              <span className="modal-label">Serviço</span>
+              <strong>{paymentAppointment.service}</strong>
+            </div>
+
+            <div className="modal-field">
+              <span className="modal-label">Valor a receber</span>
+              <div className="payment-value">{money(paymentAppointment.price)}</div>
+            </div>
+
+            <label className="modal-field">
+              <span className="modal-label">Forma de pagamento</span>
+              <select
+                className="control"
+                value={paymentMethod}
+                onChange={(event) =>
+                  setPaymentMethod(event.target.value as "cash" | "pix" | "debit" | "credit")
+                }
+                disabled={updatingId === paymentAppointment.id}
+              >
+                <option value="cash">Dinheiro</option>
+                <option value="pix">Pix</option>
+                <option value="debit">Cartão de débito</option>
+                <option value="credit">Cartão de crédito</option>
+              </select>
+            </label>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setPaymentAppointment(null)}
+                disabled={updatingId === paymentAppointment.id}
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void confirmPaymentAndComplete()}
+                disabled={updatingId === paymentAppointment.id}
+              >
+                {updatingId === paymentAppointment.id
+                  ? "Registrando..."
+                  : "Confirmar pagamento"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <p className="notice">
         Os agendamentos são carregados diretamente do banco de dados.
