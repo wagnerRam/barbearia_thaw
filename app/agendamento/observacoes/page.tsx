@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createClient } from "@/utils/supabase/client";
 
 export default function ObservacoesPage() {
   const [darkMode, setDarkMode] = useState(false);
@@ -13,20 +14,76 @@ export default function ObservacoesPage() {
   const [horario, setHorario] = useState("");
 
   useEffect(() => {
-    const isDark = localStorage.getItem("thawblack-theme") === "dark";
+    let active = true;
 
-    setDarkMode(isDark);
-    document.documentElement.dataset.theme = isDark ? "dark" : "light";
+    async function carregarResumo() {
+      const isDark = localStorage.getItem("thawblack-theme") === "dark";
 
-    setServico(sessionStorage.getItem("thawblack-selected-service") || "");
-    setProfissional(
-      sessionStorage.getItem("thawblack-selected-professional") || "",
-    );
-    setData(sessionStorage.getItem("thawblack-selected-date") || "");
-    setHorario(sessionStorage.getItem("thawblack-selected-time") || "");
-    setObservacoes(
-      sessionStorage.getItem("thawblack-observacoes") || "",
-    );
+      setDarkMode(isDark);
+      document.documentElement.dataset.theme = isDark ? "dark" : "light";
+
+      const serviceId =
+        sessionStorage.getItem("thawblack-selected-service") || "";
+
+      const professionalId =
+        sessionStorage.getItem("thawblack-selected-professional") || "";
+
+      const selectedDate =
+        sessionStorage.getItem("thawblack-selected-date") || "";
+
+      const selectedTime =
+        sessionStorage.getItem("thawblack-selected-time") || "";
+
+      const savedObservations =
+        sessionStorage.getItem("thawblack-observacoes") || "";
+
+      setData(selectedDate);
+      setHorario(selectedTime);
+      setObservacoes(savedObservations);
+
+      const supabase = createClient();
+
+      try {
+        const [serviceResult, professionalResult] = await Promise.all([
+          serviceId
+            ? supabase
+                .from("services")
+                .select("name")
+                .eq("id", serviceId)
+                .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+
+          professionalId
+            ? supabase
+                .from("professionals")
+                .select("name")
+                .eq("id", professionalId)
+                .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+        ]);
+
+        if (serviceResult.error) {
+          throw serviceResult.error;
+        }
+
+        if (professionalResult.error) {
+          throw professionalResult.error;
+        }
+
+        if (!active) return;
+
+        setServico(serviceResult.data?.name || "");
+        setProfissional(professionalResult.data?.name || "");
+      } catch (error) {
+        console.error("Erro ao carregar resumo do agendamento:", error);
+      }
+    }
+
+    carregarResumo();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   function toggleTheme() {
@@ -41,21 +98,6 @@ export default function ObservacoesPage() {
     sessionStorage.setItem("thawblack-observacoes", observacoes.trim());
     window.location.href = "/agendamento/cliente";
   }
-
-  const nomesServicos: Record<string, string> = {
-    "corte-simples": "Corte Simples",
-    "corte-barba": "Corte e Barba",
-    "corte-sobrancelha": "Corte e Sobrancelha",
-    "corte-hidratacao": "Corte e Hidratação",
-    "corte-progressiva": "Corte e Progressiva",
-    "corte-penteado": "Corte e Penteado",
-    "corte-platinado": "Corte e Platinado",
-  };
-
-  const nomesProfissionais: Record<string, string> = {
-    thaw: "Thaw",
-    otavio: "Otávio",
-  };
 
   const dataFormatada = data
     ? new Date(`${data}T12:00:00`).toLocaleDateString("pt-BR", {
@@ -121,16 +163,12 @@ export default function ObservacoesPage() {
 
               <div className="booking-summary-row">
                 <span>Serviço</span>
-                <strong>
-                  {nomesServicos[servico] || "Não selecionado"}
-                </strong>
+                <strong>{servico || "Não selecionado"}</strong>
               </div>
 
               <div className="booking-summary-row">
                 <span>Profissional</span>
-                <strong>
-                  {nomesProfissionais[profissional] || "Não selecionado"}
-                </strong>
+                <strong>{profissional || "Não selecionado"}</strong>
               </div>
 
               <div className="booking-summary-row">
@@ -182,3 +220,4 @@ export default function ObservacoesPage() {
     </main>
   );
 }
+
