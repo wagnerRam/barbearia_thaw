@@ -3,22 +3,13 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/utils/supabase/client";
 
-type AgendamentoSalvo = {
-  id: string;
-  cliente: {
-    nome: string;
-    telefone: string;
-    email: string;
-  };
-  servico: string;
-  profissional: string;
-  data: string;
-  horario: string;
-  observacoes: string;
-  preco: number;
-  status: string;
-  criadoEm: string;
+type BookingDetails = {
+  serviceName: string;
+  professionalName: string;
+  price: number;
+  duration: number;
 };
 
 export default function ConfirmacaoPage() {
@@ -31,52 +22,124 @@ export default function ConfirmacaoPage() {
   const [horario, setHorario] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [confirmado, setConfirmado] = useState(false);
+
   const [nomeCliente, setNomeCliente] = useState("");
   const [telefoneCliente, setTelefoneCliente] = useState("");
   const [emailCliente, setEmailCliente] = useState("");
+
+  const [details, setDetails] = useState<BookingDetails>({
+    serviceName: "",
+    professionalName: "",
+    price: 0,
+    duration: 0,
+  });
+
+  const [loadingDetails, setLoadingDetails] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
     const isDark =
       localStorage.getItem("thawblack-theme") === "dark";
 
     setDarkMode(isDark);
-    document.documentElement.dataset.theme = isDark
-      ? "dark"
-      : "light";
+    document.documentElement.dataset.theme = isDark ? "dark" : "light";
 
-    setServico(
-      sessionStorage.getItem("thawblack-selected-service") || ""
-    );
-    setProfissional(
-      sessionStorage.getItem("thawblack-selected-professional") || ""
-    );
+    const selectedService =
+      sessionStorage.getItem("thawblack-selected-service") || "";
+
+    const selectedProfessional =
+      sessionStorage.getItem("thawblack-selected-professional") || "";
+
+    setServico(selectedService);
+    setProfissional(selectedProfessional);
+
     setData(
       sessionStorage.getItem("thawblack-selected-date") || ""
     );
+
     setHorario(
       sessionStorage.getItem("thawblack-selected-time") || ""
     );
+
     setObservacoes(
       sessionStorage.getItem("thawblack-observacoes") || ""
     );
+
     setNomeCliente(
       sessionStorage.getItem("thawblack-cliente-nome") || ""
     );
+
     setTelefoneCliente(
       sessionStorage.getItem("thawblack-cliente-telefone") || ""
     );
+
     setEmailCliente(
       sessionStorage.getItem("thawblack-cliente-email") || ""
     );
+
+    async function loadBookingDetails() {
+      if (!selectedService || !selectedProfessional) {
+        setLoadingDetails(false);
+        return;
+      }
+
+      try {
+        const supabase = createClient();
+
+        const [serviceResult, professionalResult, relationResult] =
+          await Promise.all([
+            supabase
+              .from("services")
+              .select("name")
+              .eq("id", selectedService)
+              .maybeSingle(),
+
+            supabase
+              .from("professionals")
+              .select("name")
+              .eq("id", selectedProfessional)
+              .maybeSingle(),
+
+            supabase
+              .from("professional_services")
+              .select("price, duration_minutes")
+              .eq("service_id", selectedService)
+              .eq("professional_id", selectedProfessional)
+              .eq("active", true)
+              .maybeSingle(),
+          ]);
+
+        if (serviceResult.error) throw serviceResult.error;
+        if (professionalResult.error) throw professionalResult.error;
+        if (relationResult.error) throw relationResult.error;
+
+        setDetails({
+          serviceName: serviceResult.data?.name ?? "",
+          professionalName: professionalResult.data?.name ?? "",
+          price: Number(relationResult.data?.price ?? 0),
+          duration: Number(
+            relationResult.data?.duration_minutes ?? 0
+          ),
+        });
+      } catch (error) {
+        console.error("Erro ao carregar detalhes do agendamento:", error);
+        setErrorMessage(
+          "Não foi possível carregar os detalhes do serviço. Atualize a página e tente novamente."
+        );
+      } finally {
+        setLoadingDetails(false);
+      }
+    }
+
+    void loadBookingDetails();
   }, []);
 
   function toggleTheme() {
     const next = !darkMode;
 
     setDarkMode(next);
-    document.documentElement.dataset.theme = next
-      ? "dark"
-      : "light";
+    document.documentElement.dataset.theme = next ? "dark" : "light";
 
     localStorage.setItem(
       "thawblack-theme",
@@ -84,110 +147,140 @@ export default function ConfirmacaoPage() {
     );
   }
 
-  const nomesServicos: Record<string, string> = {
-    "corte-simples": "Corte Simples",
-    "corte-barba": "Corte e Barba",
-    "corte-sobrancelha": "Corte e Sobrancelha",
-    "corte-hidratacao": "Corte e Hidratação",
-    "corte-progressiva": "Corte e Progressiva",
-    "corte-penteado": "Corte e Penteado",
-    "corte-platinado": "Corte e Platinado",
-  };
+  function voltarAoInicio() {
+    const chavesDoAgendamento = [
+      "thawblack-selected-service",
+      "thawblack-selected-professional",
+      "thawblack-selected-date",
+      "thawblack-selected-time",
+      "thawblack-observacoes",
+      "thawblack-cliente-nome",
+      "thawblack-cliente-telefone",
+      "thawblack-cliente-email",
+      "thawblack-last-appointment-id",
+    ];
 
-  const nomesProfissionais: Record<string, string> = {
-    thaw: "Thaw",
-    otavio: "Otávio",
-  };
+    chavesDoAgendamento.forEach((chave) => {
+      sessionStorage.removeItem(chave);
+    });
 
-  const precos: Record<string, number> = {
-    "corte-simples": 40,
-    "corte-barba": 65,
-    "corte-sobrancelha": 40,
-    "corte-hidratacao": 55,
-    "corte-progressiva": 90,
-    "corte-penteado": 65,
-    "corte-platinado": 100,
-  };
+    router.push("/");
+  }
 
   const dataFormatada = data
     ? new Date(`${data}T12:00:00`).toLocaleDateString("pt-BR", {
-        weekday: "long",
-        day: "2-digit",
-        month: "long",
-        year: "numeric",
-      })
+      weekday: "long",
+      day: "2-digit",
+      month: "long",
+      year: "numeric",
+    })
     : "Não selecionada";
 
-  const precoFormatado = (
-    precos[servico] ?? 0
-  ).toLocaleString("pt-BR", {
+  const precoFormatado = details.price.toLocaleString("pt-BR", {
     style: "currency",
     currency: "BRL",
   });
 
-  function confirmarAgendamento() {
-    if (!nomeCliente.trim() || !telefoneCliente.trim() || !emailCliente.trim()) {
-      alert(
+  async function confirmarAgendamento() {
+    if (submitting) return;
+
+    setErrorMessage("");
+
+    if (
+      !nomeCliente.trim() ||
+      !telefoneCliente.trim()
+    ) {
+      setErrorMessage(
         "Seus dados não foram encontrados. Volte à etapa de dados do cliente e confira as informações."
       );
       return;
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailCliente.trim())) {
-      alert(
-        "O e-mail salvo não parece válido. Volte à etapa de dados do cliente e confira."
+    if (
+      emailCliente.trim() &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailCliente.trim())
+    ) {
+      setErrorMessage(
+        "O e-mail informado não parece válido. Confira o endereço ou deixe o campo vazio."
       );
       return;
     }
 
     if (!servico || !profissional || !data || !horario) {
-      alert(
+      setErrorMessage(
         "Confira as etapas anteriores e selecione todos os dados do agendamento."
       );
       return;
     }
 
+    if (!details.serviceName || !details.professionalName || !details.duration) {
+      setErrorMessage(
+        "Não foi possível identificar o serviço ou profissional selecionado. Volte às etapas anteriores e selecione novamente."
+      );
+      return;
+    }
+
+    setSubmitting(true);
+
     try {
-      const dadosSalvos = localStorage.getItem(
-        "thawblack-agendamentos"
+      // Os horários do projeto são tratados no fuso de São Paulo (UTC-3).
+      const startAt = new Date(
+        `${data}T${horario}:00-03:00`
       );
 
-      const agendamentosSalvos: AgendamentoSalvo[] =
-        dadosSalvos ? JSON.parse(dadosSalvos) : [];
-
-      if (!Array.isArray(agendamentosSalvos)) {
-        throw new Error("Formato de agendamentos inválido.");
+      if (Number.isNaN(startAt.getTime())) {
+        throw new Error("A data ou o horário selecionado é inválido.");
       }
 
-      const agendamento: AgendamentoSalvo = {
-        id: crypto.randomUUID(),
-        cliente: {
-          nome: nomeCliente.trim(),
-          telefone: telefoneCliente.trim(),
-          email: emailCliente.trim(),
+      if (startAt.getTime() <= Date.now()) {
+        throw new Error(
+          "Esse horário já passou. Volte e escolha uma data e horário futuros."
+        );
+      }
+
+      const response = await fetch("/api/agendamentos", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        servico,
-        profissional,
-        data,
-        horario,
-        observacoes: observacoes.trim(),
-        preco: precos[servico] ?? 0,
-        status: "pendente",
-        criadoEm: new Date().toISOString(),
-      };
+        body: JSON.stringify({
+          professional_id: profissional,
+          service_id: servico,
+          start_at: startAt.toISOString(),
+          client_name: nomeCliente.trim(),
+          client_phone: telefoneCliente.trim(),
+          client_email: emailCliente.trim() || null,
+          notes: observacoes.trim() || null,
+        }),
+      });
 
-      agendamentosSalvos.push(agendamento);
+      const result = await response.json();
 
-      localStorage.setItem(
-        "thawblack-agendamentos",
-        JSON.stringify(agendamentosSalvos)
-      );
+      if (!response.ok || !result.success) {
+        throw new Error(
+          result.error ||
+          result.message ||
+          "Não foi possível confirmar o agendamento."
+        );
+      }
 
       setConfirmado(true);
-    } catch {
-      alert(
-        "Não foi possível salvar o agendamento neste navegador."
+
+      // Guarda apenas a confirmação da tela, não o agendamento.
+      sessionStorage.setItem(
+        "thawblack-last-appointment-id",
+        result.appointment?.id ?? result.appointment_id ?? ""
       );
+    } catch (error) {
+      console.error("Erro ao confirmar agendamento:", error);
+
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Ocorreu um erro ao confirmar o agendamento. Tente novamente."
+      );
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -234,16 +327,19 @@ export default function ConfirmacaoPage() {
                 THAWBLACK · AGENDAMENTO
               </span>
 
-              <h1>Agendamento registrado!</h1>
+              <h1>Agendamento confirmado!</h1>
 
               <p>
-                Os detalhes foram salvos neste navegador. A
-                barbearia ainda não recebeu o agendamento.
+                Seu agendamento foi registrado com sucesso. A
+                barbearia já recebeu seus dados.
               </p>
 
               <div className="success-summary">
                 <span>Serviço</span>
-                <strong>{nomesServicos[servico] || servico}</strong>
+                <strong>{details.serviceName}</strong>
+
+                <span>Profissional</span>
+                <strong>{details.professionalName}</strong>
 
                 <span>Data e horário</span>
                 <strong>
@@ -276,6 +372,21 @@ export default function ConfirmacaoPage() {
                 </p>
               </div>
 
+              {errorMessage && (
+                <div
+                  role="alert"
+                  style={{
+                    marginBottom: "20px",
+                    padding: "14px 16px",
+                    borderRadius: "8px",
+                    background: darkMode ? "#542626" : "#fce8e8",
+                    color: darkMode ? "#fecaca" : "#9b2525",
+                  }}
+                >
+                  {errorMessage}
+                </div>
+              )}
+
               <div className="confirmation-layout">
                 <div className="confirmation-card">
                   <div className="confirmation-card-heading">
@@ -283,9 +394,11 @@ export default function ConfirmacaoPage() {
                       <span className="confirmation-label">
                         RESUMO DO AGENDAMENTO
                       </span>
+
                       <h2>
-                        {nomesServicos[servico] ||
-                          "Serviço não selecionado"}
+                        {loadingDetails
+                          ? "Carregando serviço..."
+                          : details.serviceName || "Serviço não selecionado"}
                       </h2>
                     </div>
 
@@ -304,8 +417,9 @@ export default function ConfirmacaoPage() {
                   <div className="booking-summary-row">
                     <span>Profissional</span>
                     <strong>
-                      {nomesProfissionais[profissional] ||
-                        "Não selecionado"}
+                      {loadingDetails
+                        ? "Carregando..."
+                        : details.professionalName || "Não selecionado"}
                     </strong>
                   </div>
 
@@ -318,6 +432,13 @@ export default function ConfirmacaoPage() {
                     <span>Horário</span>
                     <strong>{horario || "Não selecionado"}</strong>
                   </div>
+
+                  {details.duration > 0 && (
+                    <div className="booking-summary-row">
+                      <span>Duração</span>
+                      <strong>{details.duration} minutos</strong>
+                    </div>
+                  )}
 
                   <div className="booking-summary-row">
                     <span>Telefone</span>
@@ -342,12 +463,13 @@ export default function ConfirmacaoPage() {
                 <aside className="confirmation-side">
                   <div className="confirmation-notice">
                     <span className="notice-icon">i</span>
+
                     <div>
                       <strong>Antes de confirmar</strong>
                       <p>
-                        Esta é uma versão de demonstração. O registro
-                        será salvo somente neste navegador, sem envio
-                        para a barbearia.
+                        Confira os dados do seu agendamento.
+                        O pagamento será realizado presencialmente
+                        na barbearia.
                       </p>
                     </div>
                   </div>
@@ -356,16 +478,18 @@ export default function ConfirmacaoPage() {
                     type="button"
                     className="btn-primary confirmation-button"
                     onClick={confirmarAgendamento}
+                    disabled={submitting || loadingDetails}
                   >
-                    Confirmar agendamento →
+                    {submitting
+                      ? "Confirmando..."
+                      : "Confirmar agendamento →"}
                   </button>
 
                   <button
                     type="button"
                     className="confirmation-back"
-                    onClick={() =>
-                      router.push("/agendamento/cliente")
-                    }
+                    onClick={voltarAoInicio}
+                    disabled={submitting}
                   >
                     ← Revisar meus dados
                   </button>

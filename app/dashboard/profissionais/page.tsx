@@ -309,16 +309,17 @@ export default function ProfissionaisPage() {
             style={{
                 background: "var(--dashboard-bg)",
                 color: "var(--dashboard-text)",
+                ["--dashboard-muted" as string]:
+                    "color-mix(in srgb, var(--dashboard-text) 68%, var(--dashboard-bg))",
             }}
         >
             <div className="mx-auto max-w-7xl space-y-7">
                 <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div
-                            className="mb-2 flex items-center gap-2 text-sm"
-                            style={{ color: "#C9A227" }}
+                            className="text-sm text-[var(--dashboard-text)] opacity-60"
+                            
                         >
-                            <Users size={17} />
                             <span>Equipe ThawBlack</span>
                         </div>
 

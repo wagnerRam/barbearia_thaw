@@ -19,13 +19,29 @@ export const metadata: Metadata = {
     "Agende seu horário na THAWBLACK Barbearia & Escola.",
 };
 
+const themeScript = `
+  (function () {
+    try {
+      const theme = localStorage.getItem("thawblack-theme");
+      document.documentElement.dataset.theme =
+        theme === "dark" ? "dark" : "light";
+    } catch {
+      document.documentElement.dataset.theme = "light";
+    }
+  })();
+`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="pt-BR">
+    <html lang="pt-BR" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
+
       <body
         className={`${inter.variable} ${playfair.variable} min-h-screen antialiased`}
       >

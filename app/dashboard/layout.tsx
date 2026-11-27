@@ -1,6 +1,7 @@
 
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
+
 import DashboardShell from "../../components/dashboard/DashboardShell";
 import { createClient } from "../../utils/supabase/server";
 
@@ -11,6 +12,7 @@ export default async function DashboardLayout({
 }) {
   const supabase = await createClient();
 
+  // Verifica se existe uma sessão autenticada.
   const {
     data: { user },
     error: authError,
@@ -20,6 +22,7 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
+  // Verifica se o usuário possui autorização de administrador.
   const { data: admin, error: adminError } = await supabase
     .from("admin_users")
     .select("id")
@@ -27,9 +30,12 @@ export default async function DashboardLayout({
     .maybeSingle();
 
   if (adminError || !admin) {
-    console.error("Erro na validação do administrador:", adminError);
     redirect("/login?erro=sem-permissao");
   }
 
-  return <DashboardShell>{children}</DashboardShell>;
+  return (
+    <DashboardShell>
+      {children}
+    </DashboardShell>
+  );
 }

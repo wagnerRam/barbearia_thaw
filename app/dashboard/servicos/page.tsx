@@ -16,6 +16,8 @@ import {
   Tag,
 } from "lucide-react";
 
+import { createClient } from "@/utils/supabase/client";
+
 type Service = {
   id: string;
   name: string;
@@ -24,39 +26,9 @@ type Service = {
   active: boolean;
 };
 
-const STORAGE_KEY = "thawblack_services_v1";
-
-const INITIAL_SERVICES: Service[] = [
-  { id: "1", name: "Corte Simples", price: 40, duration: 30, active: true },
-  { id: "2", name: "Corte e Barba", price: 65, duration: 45, active: true },
-  {
-    id: "3",
-    name: "Corte e Sobrancelha",
-    price: 60,
-    duration: 45,
-    active: true,
-  },
-  {
-    id: "4",
-    name: "Corte e Hidratação",
-    price: 55,
-    duration: 45,
-    active: true,
-  },
-  {
-    id: "5",
-    name: "Corte Progressiva",
-    price: 80,
-    duration: 60,
-    active: true,
-  },
-  {
-    id: "6",
-    name: "Corte e Penteado",
-    price: 85,
-    duration: 60,
-    active: true,
-  },
+const PROFESSIONAL_IDS = [
+  "8b72b966-136c-43a7-9639-43850b4d97fd", // Thaw
+  "363f4119-b553-490c-a4cb-533808ea6967", // Otávio
 ];
 
 const currency = (value: number) =>
@@ -68,6 +40,7 @@ const currency = (value: number) =>
 export default function ServicosPage() {
   const [services, setServices] = useState<Service[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [pageError, setPageError] = useState("");
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"todos" | "ativos" | "inativos">(
@@ -82,29 +55,79 @@ export default function ServicosPage() {
   const [duration, setDuration] = useState("30");
   const [active, setActive] = useState(true);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+  async function loadServices() {
+    setPageError("");
 
-      if (stored) {
-        const parsed: Service[] = JSON.parse(stored);
-        setServices(parsed);
-      } else {
-        setServices(INITIAL_SERVICES);
+    const supabase = createClient();
+
+    const [
+      { data: serviceData, error: serviceError },
+      { data: relationData, error: relationError },
+    ] = await Promise.all([
+      supabase
+        .from("services")
+        .select("id, name, price, duration_minutes, active")
+        .order("name"),
+
+      supabase
+        .from("professional_services")
+        .select(
+          "service_id, professional_id, price, duration_minutes, active"
+        )
+        .in("professional_id", PROFESSIONAL_IDS),
+    ]);
+
+    if (serviceError) throw serviceError;
+    if (relationError) throw relationError;
+
+    const formattedServices: Service[] = (serviceData ?? []).map(
+      (service) => {
+        const relations = (relationData ?? []).filter(
+          (relation) => relation.service_id === service.id
+        );
+
+        const reference =
+          relations.find(
+            (relation) =>
+              relation.professional_id === PROFESSIONAL_IDS[0] &&
+              relation.active
+          ) ??
+          relations.find((relation) => relation.active) ??
+          relations[0];
+
+        return {
+          id: service.id,
+          name: service.name,
+          price: Number(reference?.price ?? service.price),
+          duration: Number(
+            reference?.duration_minutes ?? service.duration_minutes
+          ),
+          active: service.active,
+        };
       }
-    } catch {
-      setServices(INITIAL_SERVICES);
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
+    );
+
+    setServices(formattedServices);
+  }
 
   useEffect(() => {
-    if (!loaded) return;
+    async function initialize() {
+      try {
+        await loadServices();
+      } catch (err) {
+        console.error("Erro ao carregar serviços:", err);
+        setPageError(
+          "Não foi possível carregar os serviços do Supabase."
+        );
+      } finally {
+        setLoaded(true);
+      }
+    }
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(services));
-  }, [services, loaded]);
+    initialize();
+  }, []);
 
   const filteredServices = useMemo(() => {
     return services.filter((service) => {
@@ -128,7 +151,8 @@ export default function ServicosPage() {
     activeCount > 0
       ? services
           .filter((service) => service.active)
-          .reduce((sum, service) => sum + service.price, 0) / activeCount
+          .reduce((sum, service) => sum + service.price, 0) /
+        activeCount
       : 0;
 
   function openNewService() {
@@ -151,7 +175,7 @@ export default function ServicosPage() {
     setModalOpen(true);
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const parsedPrice = Number(price.replace(",", "."));
@@ -167,10 +191,7 @@ export default function ServicosPage() {
       return;
     }
 
-    if (
-      !Number.isInteger(parsedDuration) ||
-      parsedDuration <= 0
-    ) {
+    if (!Number.isInteger(parsedDuration) || parsedDuration <= 0) {
       setError("Informe uma duração válida em minutos.");
       return;
     }
@@ -187,43 +208,125 @@ export default function ServicosPage() {
       return;
     }
 
-    if (editingId) {
-      setServices((current) =>
-        current.map((service) =>
-          service.id === editingId
-            ? {
-                ...service,
-                name: name.trim(),
-                price: parsedPrice,
-                duration: parsedDuration,
-                active,
-              }
-            : service
-        )
+    setSaving(true);
+    setError("");
+
+    const supabase = createClient();
+
+    try {
+      if (editingId) {
+        const { error: serviceError } = await supabase
+          .from("services")
+          .update({
+            name: name.trim(),
+            price: parsedPrice,
+            duration_minutes: parsedDuration,
+            active,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", editingId);
+
+        if (serviceError) throw serviceError;
+
+        const { error: relationError } = await supabase
+          .from("professional_services")
+          .update({
+            price: parsedPrice,
+            duration_minutes: parsedDuration,
+            active,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("service_id", editingId)
+          .in("professional_id", PROFESSIONAL_IDS);
+
+        if (relationError) throw relationError;
+      } else {
+        const { data: newService, error: insertError } = await supabase
+          .from("services")
+          .insert({
+            name: name.trim(),
+            price: parsedPrice,
+            duration_minutes: parsedDuration,
+            active,
+          })
+          .select("id")
+          .single();
+
+        if (insertError) throw insertError;
+
+        const { error: relationError } = await supabase
+          .from("professional_services")
+          .insert(
+            PROFESSIONAL_IDS.map((professionalId) => ({
+              professional_id: professionalId,
+              service_id: newService.id,
+              price: parsedPrice,
+              duration_minutes: parsedDuration,
+              active,
+            }))
+          );
+
+        if (relationError) {
+          await supabase
+            .from("services")
+            .delete()
+            .eq("id", newService.id);
+
+          throw relationError;
+        }
+      }
+
+      await loadServices();
+      setModalOpen(false);
+    } catch (err) {
+      console.error("Erro ao salvar serviço:", err);
+
+      setError(
+        "Não foi possível salvar o serviço. Verifique sua conexão e tente novamente."
       );
-    } else {
-      const newService: Service = {
-        id: crypto.randomUUID(),
-        name: name.trim(),
-        price: parsedPrice,
-        duration: parsedDuration,
-        active,
-      };
-
-      setServices((current) => [...current, newService]);
+    } finally {
+      setSaving(false);
     }
-
-    setModalOpen(false);
   }
 
-  function toggleService(id: string) {
-    setServices((current) =>
-      current.map((service) =>
-        service.id === id
-          ? { ...service, active: !service.active }
-          : service
-      )
-    );
+  async function toggleService(id: string) {
+    const service = services.find((item) => item.id === id);
+
+    if (!service) return;
+
+    const newActive = !service.active;
+    const supabase = createClient();
+
+    try {
+      const { error: serviceError } = await supabase
+        .from("services")
+        .update({
+          active: newActive,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id);
+
+      if (serviceError) throw serviceError;
+
+      const { error: relationError } = await supabase
+        .from("professional_services")
+        .update({
+          active: newActive,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("service_id", id)
+        .in("professional_id", PROFESSIONAL_IDS);
+
+      if (relationError) throw relationError;
+
+      await loadServices();
+    } catch (err) {
+      console.error("Erro ao alterar status do serviço:", err);
+
+      setPageError(
+        "Não foi possível alterar o status do serviço."
+      );
+    }
   }
 
   if (!loaded) {
@@ -240,6 +343,8 @@ export default function ServicosPage() {
       style={{
         background: "var(--dashboard-bg)",
         color: "var(--dashboard-text)",
+        ["--dashboard-muted" as string]:
+          "color-mix(in srgb, var(--dashboard-text) 68%, var(--dashboard-bg))",
       }}
     >
       <div className="mx-auto max-w-7xl space-y-7">
@@ -247,10 +352,8 @@ export default function ServicosPage() {
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div
-              className="mb-2 flex items-center gap-2 text-sm"
-              style={{ color: "#C9A227" }}
+              className="text-sm text-[var(--dashboard-text)] opacity-60"
             >
-              <Scissors size={17} />
               <span>Gerenciamento</span>
             </div>
 
@@ -275,6 +378,29 @@ export default function ServicosPage() {
             Novo serviço
           </button>
         </header>
+
+        {pageError && (
+          <div
+            className="rounded-xl border p-4 text-sm"
+            style={{
+              background: "rgba(239,68,68,0.10)",
+              borderColor: "rgba(239,68,68,0.30)",
+              color: "#EF4444",
+            }}
+          >
+            {pageError}
+            <button
+              onClick={() =>
+                loadServices().catch(() =>
+                  setPageError("Não foi possível carregar os serviços.")
+                )
+              }
+              className="ml-2 underline"
+            >
+              Tentar novamente
+            </button>
+          </div>
+        )}
 
         {/* Indicadores */}
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -329,6 +455,7 @@ export default function ServicosPage() {
                   className="absolute left-3 top-1/2 -translate-y-1/2"
                   style={{ color: "var(--dashboard-muted)" }}
                 />
+
                 <input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
@@ -373,7 +500,11 @@ export default function ServicosPage() {
                 className="mx-auto mb-3"
                 style={{ color: "var(--dashboard-muted)" }}
               />
-              <p className="font-medium">Nenhum serviço encontrado</p>
+
+              <p className="font-medium">
+                Nenhum serviço encontrado
+              </p>
+
               <p
                 className="mt-1 text-sm"
                 style={{ color: "var(--dashboard-muted)" }}
@@ -420,9 +551,7 @@ export default function ServicosPage() {
                     {service.name}
                   </h3>
 
-                  <div
-                    className="mt-4 flex items-center justify-between gap-3"
-                  >
+                  <div className="mt-4 flex items-center justify-between gap-3">
                     <div>
                       <p
                         className="text-xs"
@@ -430,6 +559,7 @@ export default function ServicosPage() {
                       >
                         Preço
                       </p>
+
                       <p className="mt-1 text-xl font-bold">
                         {currency(service.price)}
                       </p>
@@ -443,6 +573,7 @@ export default function ServicosPage() {
                         <Clock3 size={14} />
                         Duração
                       </p>
+
                       <p className="mt-1 font-medium">
                         {service.duration} min
                       </p>
@@ -490,8 +621,8 @@ export default function ServicosPage() {
           style={{ color: "var(--dashboard-muted)" }}
         >
           <Sparkles size={14} className="mr-1 inline" />
-          Os dados são armazenados neste navegador. As durações iniciais são
-          sugestões e podem ser ajustadas conforme a rotina da barbearia.
+          Os serviços são salvos no banco de dados e compartilhados entre
+          Thaw e Otávio, com o mesmo preço e duração para ambos.
         </p>
       </div>
 
@@ -501,7 +632,7 @@ export default function ServicosPage() {
           className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-4"
           style={{ background: "rgba(0,0,0,0.65)" }}
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
+            if (event.target === event.currentTarget && !saving) {
               setModalOpen(false);
             }
           }}
@@ -526,21 +657,28 @@ export default function ServicosPage() {
                   <Tag size={16} />
                   Catálogo
                 </div>
-                <h2 id="service-modal-title" className="text-xl font-bold">
+
+                <h2
+                  id="service-modal-title"
+                  className="text-xl font-bold"
+                >
                   {editingId ? "Editar serviço" : "Novo serviço"}
                 </h2>
+
                 <p
                   className="mt-1 text-sm"
                   style={{ color: "var(--dashboard-muted)" }}
                 >
-                  Preencha as informações abaixo.
+                  Preencha as informações abaixo. O preço e a duração
+                  serão iguais para os dois profissionais.
                 </p>
               </div>
 
               <button
                 onClick={() => setModalOpen(false)}
+                disabled={saving}
                 aria-label="Fechar modal"
-                className="rounded-lg p-2 hover:opacity-70"
+                className="rounded-lg p-2 hover:opacity-70 disabled:opacity-40"
               >
                 <X size={20} />
               </button>
@@ -554,6 +692,7 @@ export default function ServicosPage() {
                 >
                   Nome do serviço
                 </label>
+
                 <input
                   id="service-name"
                   value={name}
@@ -566,6 +705,7 @@ export default function ServicosPage() {
                     borderColor: "var(--dashboard-border)",
                   }}
                   required
+                  disabled={saving}
                 />
               </div>
 
@@ -577,6 +717,7 @@ export default function ServicosPage() {
                   >
                     Preço (R$)
                   </label>
+
                   <input
                     id="service-price"
                     value={price}
@@ -590,6 +731,7 @@ export default function ServicosPage() {
                       borderColor: "var(--dashboard-border)",
                     }}
                     required
+                    disabled={saving}
                   />
                 </div>
 
@@ -600,6 +742,7 @@ export default function ServicosPage() {
                   >
                     Duração (minutos)
                   </label>
+
                   <input
                     id="service-duration"
                     type="number"
@@ -614,6 +757,7 @@ export default function ServicosPage() {
                       borderColor: "var(--dashboard-border)",
                     }}
                     required
+                    disabled={saving}
                   />
                 </div>
               </div>
@@ -624,8 +768,12 @@ export default function ServicosPage() {
                   checked={active}
                   onChange={(event) => setActive(event.target.checked)}
                   className="h-4 w-4 accent-yellow-500"
+                  disabled={saving}
                 />
-                <span className="text-sm">Serviço ativo para agendamentos</span>
+
+                <span className="text-sm">
+                  Serviço ativo para agendamentos
+                </span>
               </label>
 
               {error && (
@@ -647,7 +795,8 @@ export default function ServicosPage() {
                 <button
                   type="button"
                   onClick={() => setModalOpen(false)}
-                  className="rounded-xl border px-5 py-3 text-sm font-medium"
+                  disabled={saving}
+                  className="rounded-xl border px-5 py-3 text-sm font-medium disabled:opacity-50"
                   style={{
                     borderColor: "var(--dashboard-border)",
                     color: "var(--dashboard-text)",
@@ -658,10 +807,15 @@ export default function ServicosPage() {
 
                 <button
                   type="submit"
-                  className="rounded-xl px-5 py-3 text-sm font-semibold"
+                  disabled={saving}
+                  className="rounded-xl px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                   style={{ background: "#C9A227", color: "#171716" }}
                 >
-                  {editingId ? "Salvar alterações" : "Cadastrar serviço"}
+                  {saving
+                    ? "Salvando..."
+                    : editingId
+                      ? "Salvar alterações"
+                      : "Cadastrar serviço"}
                 </button>
               </div>
             </form>
@@ -699,7 +853,9 @@ function StatCard({
           >
             {label}
           </p>
+
           <p className="mt-2 text-2xl font-bold">{value}</p>
+
           <p
             className="mt-1 text-xs"
             style={{ color: "var(--dashboard-muted)" }}

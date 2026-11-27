@@ -1,9 +1,15 @@
 
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createClient } from "@/utils/supabase/client";
 
-type Status = "Agendado" | "Concluído" | "Cancelado";
+type Status =
+  | "Agendado"
+  | "Em andamento"
+  | "Concluído"
+  | "Cancelado"
+  | "Não compareceu";
 
 type Appointment = {
   id: string;
@@ -18,19 +24,23 @@ type Appointment = {
   notes: string;
 };
 
-type AppointmentForm = Omit<Appointment, "id" | "status">;
+type AppointmentRow = {
+  id: string;
+  status: string;
+  start_at: string;
+  end_at: string;
+  notes: string | null;
+  clients: { name: string; phone: string } | null;
+  professionals: { name: string } | null;
+  appointment_items: {
+    service_name: string;
+    price_snapshot: number;
+  }[];
+};
 
-const STORAGE_KEY = "thawblack_appointments_v1";
-
-const emptyForm: AppointmentForm = {
-  customer: "",
-  phone: "",
-  service: "Corte masculino",
-  professional: "Thaw",
-  date: "",
-  time: "09:00",
-  price: 45,
-  notes: "",
+type PaymentRow = {
+  amount: number;
+  paid_at: string | null;
 };
 
 const money = (value: number) =>
@@ -39,103 +49,173 @@ const money = (value: number) =>
     currency: "BRL",
   });
 
-const today = () => {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+function dateParts(value: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(value));
 
-  return `${year}-${month}-${day}`;
-};
+  const get = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? "";
 
-const dateOffset = (offset: number) => {
-  const date = new Date();
-  date.setDate(date.getDate() + offset);
+  return {
+    date: `${get("year")}-${get("month")}-${get("day")}`,
+    time: `${get("hour")}:${get("minute")}`,
+  };
+}
 
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+function today() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
 
-  return `${year}-${month}-${day}`;
-};
+function statusFromDatabase(status: string): Status {
+  const statuses: Record<string, Status> = {
+    confirmed: "Agendado",
+    in_progress: "Em andamento",
+    completed: "Concluído",
+    cancelled: "Cancelado",
+    no_show: "Não compareceu",
+  };
 
-const initialAppointments = (): Appointment[] => [
-  {
-    id: "demo-1",
-    customer: "Lucas Ferreira",
-    phone: "",
-    service: "Corte masculino",
-    professional: "Thaw",
-    date: today(),
-    time: "09:00",
-    price: 45,
-    status: "Agendado",
-    notes: "",
-  },
-  {
-    id: "demo-2",
-    customer: "Gabriel Santos",
-    phone: "",
-    service: "Corte + barba",
-    professional: "Otávio",
-    date: today(),
-    time: "10:00",
-    price: 70,
-    status: "Agendado",
-    notes: "",
-  },
-  {
-    id: "demo-3",
-    customer: "Matheus Oliveira",
-    phone: "",
-    service: "Barba",
-    professional: "Thaw",
-    date: dateOffset(1),
-    time: "14:00",
-    price: 30,
-    status: "Agendado",
-    notes: "",
-  },
-];
+  return statuses[status] ?? "Agendado";
+}
+
+function statusToDatabase(status: Status) {
+  const statuses: Record<Status, string> = {
+    Agendado: "confirmed",
+    "Em andamento": "in_progress",
+    Concluído: "completed",
+    Cancelado: "cancelled",
+    "Não compareceu": "no_show",
+  };
+
+  return statuses[status];
+}
 
 const statusClass: Record<Status, string> = {
   Agendado: "status-scheduled",
+  "Em andamento": "status-scheduled",
   Concluído: "status-done",
   Cancelado: "status-cancelled",
+  "Não compareceu": "status-cancelled",
 };
 
 export default function AgendamentosPage() {
+  const supabase = useMemo(() => createClient(), []);
+
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [ready, setReady] = useState(false);
+  const [loadingError, setLoadingError] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("Todos");
   const [selectedDate, setSelectedDate] = useState("");
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<AppointmentForm>(emptyForm);
-  const [error, setError] = useState("");
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [revenueToday, setRevenueToday] = useState(0);
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+  const loadAppointments = useCallback(async () => {
+    setReady(false);
+    setLoadingError("");
 
-      if (saved) {
-        setAppointments(JSON.parse(saved) as Appointment[]);
-      } else {
-        setAppointments(initialAppointments());
-      }
-    } catch {
-      setAppointments(initialAppointments());
+    const { data, error } = await supabase
+      .from("appointments")
+      .select(`
+        id,
+        status,
+        start_at,
+        end_at,
+        notes,
+        clients (
+          name,
+          phone
+        ),
+        professionals (
+          name
+        ),
+        appointment_items (
+          service_name,
+          price_snapshot
+        )
+      `)
+      .order("start_at", { ascending: true });
+
+    if (error) {
+      console.error("Erro ao carregar agendamentos:", error);
+      setLoadingError(
+        "Não foi possível carregar os agendamentos. Verifique a conexão com o Supabase."
+      );
+      setReady(true);
+      return;
+    }
+
+    const rows = (data ?? []) as unknown as AppointmentRow[];
+
+    const mapped: Appointment[] = rows.map((row) => {
+      const dateTime = dateParts(row.start_at);
+
+      return {
+        id: row.id,
+        customer: row.clients?.name ?? "Cliente não identificado",
+        phone: row.clients?.phone ?? "",
+        service:
+          row.appointment_items
+            ?.map((item) => item.service_name)
+            .join(" + ") || "Serviço não informado",
+        professional: row.professionals?.name ?? "Não informado",
+        date: dateTime.date,
+        time: dateTime.time,
+        price:
+          row.appointment_items?.reduce(
+            (total, item) => total + Number(item.price_snapshot || 0),
+            0
+          ) ?? 0,
+        status: statusFromDatabase(row.status),
+        notes: row.notes ?? "",
+      };
+    });
+
+    setAppointments(mapped);
+
+    // O faturamento considera somente pagamentos efetivamente recebidos.
+    const { data: payments, error: paymentsError } = await supabase
+      .from("payments")
+      .select("amount, paid_at")
+      .eq("status", "paid")
+      .not("paid_at", "is", null);
+
+    if (paymentsError) {
+      console.error("Erro ao carregar pagamentos:", paymentsError);
+      setRevenueToday(0);
+    } else {
+      const paidToday = ((payments ?? []) as PaymentRow[]).filter(
+        (payment) =>
+          payment.paid_at &&
+          dateParts(payment.paid_at).date === today()
+      );
+
+      setRevenueToday(
+        paidToday.reduce(
+          (total, payment) => total + Number(payment.amount || 0),
+          0
+        )
+      );
     }
 
     setReady(true);
-  }, []);
+  }, [supabase]);
 
   useEffect(() => {
-    if (ready) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(appointments));
-    }
-  }, [appointments, ready]);
+    void loadAppointments();
+  }, [loadAppointments]);
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -170,125 +250,38 @@ export default function AgendamentosPage() {
     (item) => item.date === today() && item.status === "Concluído"
   );
 
-  const revenueToday = completedToday.reduce(
-    (total, item) => total + item.price,
-    0
-  );
+  async function changeStatus(id: string, status: Status) {
+    setUpdatingId(id);
+    setLoadingError("");
 
-  function openNew() {
-    setEditingId(null);
-    setForm({ ...emptyForm, date: today() });
-    setError("");
-    setModalOpen(true);
-  }
+    const { error } = await supabase
+      .from("appointments")
+      .update({ status: statusToDatabase(status) })
+      .eq("id", id);
 
-  function openEdit(item: Appointment) {
-    setEditingId(item.id);
-
-    setForm({
-      customer: item.customer,
-      phone: item.phone,
-      service: item.service,
-      professional: item.professional,
-      date: item.date,
-      time: item.time,
-      price: item.price,
-      notes: item.notes,
-    });
-
-    setError("");
-    setModalOpen(true);
-  }
-
-  function saveAppointment(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError("");
-
-    if (
-      !form.customer.trim() ||
-      !form.date ||
-      !form.time ||
-      !form.service ||
-      !form.professional
-    ) {
-      setError("Preencha todos os campos obrigatórios.");
+    if (error) {
+      console.error("Erro ao atualizar status:", error);
+      setLoadingError("Não foi possível atualizar o status do agendamento.");
+      setUpdatingId(null);
       return;
     }
 
-    if (!Number.isFinite(form.price) || form.price < 0) {
-      setError("Informe um preço válido.");
-      return;
-    }
-
-    const conflict = appointments.some(
-      (item) =>
-        item.id !== editingId &&
-        item.date === form.date &&
-        item.time === form.time &&
-        item.professional === form.professional &&
-        item.status === "Agendado"
-    );
-
-    if (conflict) {
-      setError(
-        "Este profissional já tem um horário agendado nessa data e hora."
-      );
-      return;
-    }
-
-    if (editingId) {
-      setAppointments((current) =>
-        current.map((item) =>
-          item.id === editingId ? { ...item, ...form } : item
-        )
-      );
-    } else {
-      const newAppointment: Appointment = {
-        ...form,
-        id: crypto.randomUUID(),
-        status: "Agendado",
-      };
-
-      setAppointments((current) => [...current, newAppointment]);
-    }
-
-    setModalOpen(false);
-  }
-
-  function changeStatus(id: string, status: Status) {
+    // Atualiza somente o agendamento alterado, sem recarregar a página inteira.
     setAppointments((current) =>
-      current.map((item) =>
-        item.id === id ? { ...item, status } : item
+      current.map((appointment) =>
+        appointment.id === id
+          ? { ...appointment, status }
+          : appointment
       )
     );
-  }
 
-  function deleteAppointment(id: string) {
-    if (
-      !window.confirm(
-        "Deseja excluir este agendamento definitivamente?"
-      )
-    ) {
-      return;
-    }
-
-    setAppointments((current) =>
-      current.filter((item) => item.id !== id)
-    );
-  }
-
-  function updateField<K extends keyof AppointmentForm>(
-    field: K,
-    value: AppointmentForm[K]
-  ) {
-    setForm((current) => ({ ...current, [field]: value }));
+    setUpdatingId(null);
   }
 
   if (!ready) {
     return (
       <main className="appointments-page">
         <p className="loading">Carregando agendamentos...</p>
-
         <style jsx global>{`
           .appointments-page {
             min-height: 100vh;
@@ -296,11 +289,6 @@ export default function AgendamentosPage() {
             background: var(--dashboard-bg, #0a0a0a);
             color: var(--dashboard-text, #f1eee3);
             font-family: Arial, Helvetica, sans-serif;
-          }
-
-          .appointments-page .loading {
-            color: var(--dashboard-text, #f1eee3);
-            opacity: 0.7;
           }
         `}</style>
       </main>
@@ -315,352 +303,138 @@ export default function AgendamentosPage() {
           --surface: var(--dashboard-panel, #171716);
           --surface-hover: var(--dashboard-hover, #2b2b2e);
           --text: var(--dashboard-text, #f1eee3);
-          --muted: color-mix(
-            in srgb,
-            var(--dashboard-text, #f1eee3) 60%,
-            transparent
-          );
+          --muted: color-mix(in srgb, var(--dashboard-text, #f1eee3) 60%, transparent);
           --border: var(--dashboard-border, #3b3b3f);
           --accent: #c9a227;
           --input: var(--dashboard-bg, #0a0a0a);
-
           min-height: 100vh;
           padding: 36px;
           background: var(--page);
           color: var(--text);
           font-family: Arial, Helvetica, sans-serif;
         }
-
         .appointments-page *,
         .appointments-page *::before,
-        .appointments-page *::after {
-          box-sizing: border-box;
-        }
-
-        .appointments-page .loading {
-          color: var(--muted);
-          padding: 24px;
-        }
-
+        .appointments-page *::after { box-sizing: border-box; }
+        .appointments-page .loading { color: var(--muted); padding: 24px; }
         .appointments-page .topbar {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 20px;
-          margin-bottom: 28px;
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 20px; margin-bottom: 28px;
         }
-
         .appointments-page h1 {
           font-size: clamp(26px, 3vw, 34px);
-          letter-spacing: -1px;
-          margin: 0 0 8px;
+          letter-spacing: -1px; margin: 0 0 8px;
         }
-
-        .appointments-page p {
-          margin-top: 0;
-        }
-
-        .appointments-page .muted {
-          color: var(--muted);
-          font-size: 14px;
-        }
-
+        .appointments-page p { margin-top: 0; }
+        .appointments-page .muted { color: var(--muted); font-size: 14px; }
         .appointments-page button,
         .appointments-page input,
-        .appointments-page select,
-        .appointments-page textarea {
-          font: inherit;
-        }
-
-        .appointments-page button {
-          cursor: pointer;
-        }
-
+        .appointments-page select { font: inherit; }
+        .appointments-page button { cursor: pointer; }
+        .appointments-page button:disabled { opacity: .5; cursor: wait; }
         .appointments-page .primary {
-          border: 1px solid var(--accent);
-          border-radius: 9px;
-          padding: 12px 17px;
-          background: var(--accent);
-          color: #171716;
-          font-weight: 700;
+          border: 1px solid var(--accent); border-radius: 9px;
+          padding: 12px 17px; background: var(--accent);
+          color: #171716; font-weight: 700;
         }
-
         .appointments-page .secondary {
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          padding: 8px 10px;
-          background: transparent;
-          color: var(--text);
-          font-size: 13px;
+          border: 1px solid var(--border); border-radius: 8px;
+          padding: 8px 10px; background: transparent;
+          color: var(--text); font-size: 13px;
         }
-
-        .appointments-page .danger {
-          color: #fca5a5;
-        }
-
         .appointments-page .metrics {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 16px;
-          margin-bottom: 26px;
+          display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 16px; margin-bottom: 26px;
         }
-
         .appointments-page .metric,
         .appointments-page .panel {
-          background: var(--surface);
-          border: 1px solid var(--border);
+          background: var(--surface); border: 1px solid var(--border);
           border-radius: 13px;
         }
-
-        .appointments-page .metric {
-          padding: 20px;
-        }
-
-        .appointments-page .metric-label {
-          color: var(--muted);
-          font-size: 13px;
-        }
-
+        .appointments-page .metric { padding: 20px; }
+        .appointments-page .metric-label { color: var(--muted); font-size: 13px; }
         .appointments-page .metric-value {
-          font-size: 27px;
-          font-weight: 700;
-          margin-top: 12px;
+          font-size: 27px; font-weight: 700; margin-top: 12px;
         }
-
-        .appointments-page .panel {
-          overflow: hidden;
-        }
-
+        .appointments-page .panel { overflow: hidden; }
         .appointments-page .filters {
-          display: flex;
-          align-items: center;
-          flex-wrap: wrap;
-          gap: 12px;
-          padding: 18px;
-          border-bottom: 1px solid var(--border);
+          display: flex; align-items: center; flex-wrap: wrap;
+          gap: 12px; padding: 18px; border-bottom: 1px solid var(--border);
         }
-
         .appointments-page .control {
-          width: 100%;
-          min-width: 0;
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          padding: 11px 12px;
-          background: var(--input);
-          color: var(--text);
+          width: 100%; min-width: 0; border: 1px solid var(--border);
+          border-radius: 8px; padding: 11px 12px;
+          background: var(--input); color: var(--text);
         }
-
-        .appointments-page .control::placeholder {
-          color: var(--muted);
-        }
-
-        .appointments-page .search {
-          flex: 1 1 230px;
-        }
-
-        .appointments-page .filter-select {
-          flex: 0 1 160px;
-        }
-
-        .appointments-page .date-filter {
-          flex: 0 1 170px;
-        }
-
-        .appointments-page .table-wrap {
-          overflow-x: auto;
-        }
-
+        .appointments-page .control::placeholder { color: var(--muted); }
+        .appointments-page .search { flex: 1 1 230px; }
+        .appointments-page .filter-select { flex: 0 1 180px; }
+        .appointments-page .date-filter { flex: 0 1 170px; }
+        .appointments-page .table-wrap { overflow-x: auto; }
         .appointments-page table {
           width: 100%;
+          min-width: 1160px;
+          table-layout: fixed;
           border-collapse: collapse;
           text-align: left;
-          min-width: 850px;
         }
-
         .appointments-page th {
-          color: var(--muted);
-          font-size: 12px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
+          color: var(--muted); font-size: 12px; font-weight: 600;
+          text-transform: uppercase; letter-spacing: .5px;
           background: var(--surface);
         }
-
         .appointments-page th,
         .appointments-page td {
-          padding: 16px 18px;
-          border-bottom: 1px solid var(--border);
+          padding: 16px 18px; border-bottom: 1px solid var(--border);
         }
-
-        .appointments-page td {
-          font-size: 13px;
-        }
-
-        .appointments-page tbody tr:hover {
-          background: var(--surface-hover);
-        }
-
-        .appointments-page .customer-name {
-          font-weight: 700;
-          margin-bottom: 5px;
-        }
-
-        .appointments-page .subtext {
-          color: var(--muted);
-          font-size: 12px;
-        }
-
+        .appointments-page td { font-size: 13px; }
+        .appointments-page tbody tr:hover { background: var(--surface-hover); }
+        .appointments-page .customer-name { font-weight: 700; margin-bottom: 5px; }
+        .appointments-page .subtext { color: var(--muted); font-size: 12px; }
         .appointments-page .status {
-          display: inline-block;
-          border-radius: 20px;
-          padding: 6px 9px;
-          font-size: 11px;
-          font-weight: 700;
-          white-space: nowrap;
+          display: inline-block; border-radius: 20px; padding: 6px 9px;
+          font-size: 11px; font-weight: 700; white-space: nowrap;
         }
-
-        .appointments-page .status-scheduled {
-          color: #f4d779;
-          background: #5b491b;
-        }
-
-        .appointments-page .status-done {
-          color: #a7f3d0;
-          background: #174b3b;
-        }
-
-        .appointments-page .status-cancelled {
-          color: #fecaca;
-          background: #542626;
-        }
-
+        .appointments-page .status-scheduled { color: #f4d779; background: #5b491b; }
+        .appointments-page .status-done { color: #a7f3d0; background: #174b3b; }
+        .appointments-page .status-cancelled { color: #fecaca; background: #542626; }
         .appointments-page .actions {
           display: flex;
           flex-wrap: wrap;
+          align-content: flex-start;
+          align-items: flex-start;
           gap: 6px;
+          height: 80px;
+          min-height: 80px;
+          overflow: hidden;
         }
-
+        .appointments-page .actions button {
+          white-space: nowrap;
+          flex: 0 0 auto;
+        }
         .appointments-page .empty {
-          text-align: center;
-          padding: 48px 20px;
-          color: var(--muted);
+          text-align: center; padding: 48px 20px; color: var(--muted);
         }
-
-        .appointments-page .modal-backdrop {
-          position: fixed;
-          inset: 0;
-          z-index: 50;
-          display: grid;
-          place-items: center;
-          padding: 18px;
-          background: #000b;
-          overflow-y: auto;
-        }
-
-        .appointments-page .modal {
-          width: min(620px, 100%);
-          max-height: calc(100vh - 36px);
-          overflow-y: auto;
-          border: 1px solid var(--border);
-          border-radius: 14px;
-          padding: 24px;
-          background: var(--surface);
-          color: var(--text);
-        }
-
-        .appointments-page .modal-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 12px;
-          margin-bottom: 22px;
-        }
-
-        .appointments-page .modal-header h2 {
-          margin: 0;
-          font-size: 22px;
-        }
-
-        .appointments-page .form-grid {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 16px;
-        }
-
-        .appointments-page .field {
-          display: flex;
-          flex-direction: column;
-          gap: 7px;
-          font-size: 13px;
-        }
-
-        .appointments-page .field.full {
-          grid-column: 1 / -1;
-        }
-
-        .appointments-page .field label {
-          color: var(--muted);
-        }
-
         .appointments-page .error {
-          margin-top: 14px;
-          color: #fca5a5;
-          font-size: 13px;
+          margin: 0 0 16px; padding: 12px 16px;
+          border: 1px solid #8b3333; border-radius: 8px;
+          color: #fca5a5; background: #542626;
         }
-
-        .appointments-page .modal-footer {
-          display: flex;
-          justify-content: flex-end;
-          gap: 10px;
-          margin-top: 24px;
-        }
-
         .appointments-page .notice {
-          margin-top: 16px;
-          color: var(--muted);
-          font-size: 12px;
+          margin-top: 16px; color: var(--muted); font-size: 12px;
         }
-
         @media (max-width: 700px) {
-          .appointments-page {
-            padding: 22px 14px;
-          }
-
+          .appointments-page { padding: 22px 14px; }
           .appointments-page .topbar {
-            align-items: flex-start;
-            flex-direction: column;
+            align-items: flex-start; flex-direction: column;
           }
-
-          .appointments-page .metrics {
-            grid-template-columns: 1fr;
-            gap: 10px;
-          }
-
-          .appointments-page .metric {
-            padding: 16px;
-          }
-
-          .appointments-page .metric-value {
-            font-size: 23px;
-          }
-
-          .appointments-page .filters {
-            align-items: stretch;
-          }
-
+          .appointments-page .metrics { grid-template-columns: 1fr; gap: 10px; }
+          .appointments-page .metric { padding: 16px; }
+          .appointments-page .metric-value { font-size: 23px; }
+          .appointments-page .filters { align-items: stretch; }
           .appointments-page .search,
           .appointments-page .filter-select,
-          .appointments-page .date-filter {
-            flex: 1 1 100%;
-          }
-
-          .appointments-page .form-grid {
-            grid-template-columns: 1fr;
-          }
-
-          .appointments-page .field.full {
-            grid-column: auto;
-          }
+          .appointments-page .date-filter { flex: 1 1 100%; }
         }
       `}</style>
 
@@ -673,10 +447,17 @@ export default function AgendamentosPage() {
           </p>
         </div>
 
-        <button className="primary" onClick={openNew}>
-          + Novo agendamento
+        <button
+          type="button"
+          className="primary"
+          onClick={() => void loadAppointments()}
+          disabled={updatingId !== null}
+        >
+          Atualizar agendamentos
         </button>
       </header>
+
+      {loadingError && <p className="error">{loadingError}</p>}
 
       <section className="metrics">
         <article className="metric">
@@ -690,7 +471,7 @@ export default function AgendamentosPage() {
         </article>
 
         <article className="metric">
-          <div className="metric-label">Faturamento concluído hoje</div>
+          <div className="metric-label">Recebimentos de hoje</div>
           <div className="metric-value">{money(revenueToday)}</div>
         </article>
       </section>
@@ -716,8 +497,10 @@ export default function AgendamentosPage() {
             >
               <option value="Todos">Todos os status</option>
               <option value="Agendado">Agendados</option>
+              <option value="Em andamento">Em andamento</option>
               <option value="Concluído">Concluídos</option>
               <option value="Cancelado">Cancelados</option>
+              <option value="Não compareceu">Não compareceu</option>
             </select>
           </div>
 
@@ -732,10 +515,7 @@ export default function AgendamentosPage() {
           </div>
 
           {selectedDate && (
-            <button
-              className="secondary"
-              onClick={() => setSelectedDate("")}
-            >
+            <button className="secondary" onClick={() => setSelectedDate("")}>
               Limpar data
             </button>
           )}
@@ -743,6 +523,15 @@ export default function AgendamentosPage() {
 
         <div className="table-wrap">
           <table>
+            <colgroup>
+              <col style={{ width: "220px" }} />
+              <col style={{ width: "150px" }} />
+              <col style={{ width: "180px" }} />
+              <col style={{ width: "150px" }} />
+              <col style={{ width: "100px" }} />
+              <col style={{ width: "140px" }} />
+              <col style={{ width: "220px" }} />
+            </colgroup>
             <thead>
               <tr>
                 <th>Cliente</th>
@@ -782,41 +571,55 @@ export default function AgendamentosPage() {
 
                   <td>
                     <div className="actions">
-                      <button
-                        className="secondary"
-                        onClick={() => openEdit(item)}
-                      >
-                        Editar
-                      </button>
-
                       {item.status === "Agendado" && (
                         <>
                           <button
+                            type="button"
                             className="secondary"
+                            disabled={updatingId === item.id}
                             onClick={() =>
-                              changeStatus(item.id, "Concluído")
+                              void changeStatus(item.id, "Em andamento")
                             }
                           >
-                            Concluir
+                            Iniciar
                           </button>
 
                           <button
-                            className="secondary danger"
+                            type="button"
+                            className="secondary"
+                            disabled={updatingId === item.id}
                             onClick={() =>
-                              changeStatus(item.id, "Cancelado")
+                              void changeStatus(item.id, "Cancelado")
                             }
                           >
                             Cancelar
                           </button>
+
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={updatingId === item.id}
+                            onClick={() =>
+                              void changeStatus(item.id, "Não compareceu")
+                            }
+                          >
+                            Não compareceu
+                          </button>
                         </>
                       )}
 
-                      <button
-                        className="secondary danger"
-                        onClick={() => deleteAppointment(item.id)}
-                      >
-                        Excluir
-                      </button>
+                      {item.status === "Em andamento" && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={updatingId === item.id}
+                          onClick={() =>
+                            void changeStatus(item.id, "Concluído")
+                          }
+                        >
+                          Concluir
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -828,7 +631,7 @@ export default function AgendamentosPage() {
             <div className="empty">
               <p>Nenhum agendamento encontrado.</p>
               <p className="muted">
-                Tente alterar os filtros ou cadastre um novo horário.
+                Tente alterar os filtros ou atualizar os agendamentos.
               </p>
             </div>
           )}
@@ -836,184 +639,9 @@ export default function AgendamentosPage() {
       </section>
 
       <p className="notice">
-        Os dados iniciais são demonstrativos e ficam salvos neste navegador.
-        O sistema ainda não está conectado a um banco de dados.
+        Os agendamentos são carregados diretamente do banco de dados.
+        Os recebimentos consideram somente pagamentos confirmados.
       </p>
-
-      {modalOpen && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setModalOpen(false);
-            }
-          }}
-        >
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="appointment-modal-title"
-          >
-            <div className="modal-header">
-              <h2 id="appointment-modal-title">
-                {editingId ? "Editar agendamento" : "Novo agendamento"}
-              </h2>
-
-              <button
-                className="secondary"
-                type="button"
-                onClick={() => setModalOpen(false)}
-                aria-label="Fechar"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={saveAppointment}>
-              <div className="form-grid">
-                <div className="field full">
-                  <label htmlFor="customer">Nome do cliente *</label>
-                  <input
-                    id="customer"
-                    className="control"
-                    value={form.customer}
-                    onChange={(event) =>
-                      updateField("customer", event.target.value)
-                    }
-                    required
-                    maxLength={100}
-                    placeholder="Nome completo"
-                  />
-                </div>
-
-                <div className="field">
-                  <label htmlFor="phone">Telefone</label>
-                  <input
-                    id="phone"
-                    className="control"
-                    value={form.phone}
-                    onChange={(event) =>
-                      updateField("phone", event.target.value)
-                    }
-                    maxLength={30}
-                    placeholder="(11) 99999-9999"
-                  />
-                </div>
-
-                <div className="field">
-                  <label htmlFor="service">Serviço *</label>
-                  <select
-                    id="service"
-                    className="control"
-                    value={form.service}
-                    onChange={(event) =>
-                      updateField("service", event.target.value)
-                    }
-                  >
-                    <option>Corte masculino</option>
-                    <option>Barba</option>
-                    <option>Corte + barba</option>
-                    <option>Acabamento</option>
-                    <option>Outro</option>
-                  </select>
-                </div>
-
-                <div className="field">
-                  <label htmlFor="professional">Profissional *</label>
-                  <select
-                    id="professional"
-                    className="control"
-                    value={form.professional}
-                    onChange={(event) =>
-                      updateField("professional", event.target.value)
-                    }
-                  >
-                    <option>Thaw</option>
-                    <option>Otávio</option>
-                  </select>
-                </div>
-
-                <div className="field">
-                  <label htmlFor="price">Valor (R$) *</label>
-                  <input
-                    id="price"
-                    className="control"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={form.price}
-                    onChange={(event) =>
-                      updateField("price", Number(event.target.value))
-                    }
-                    required
-                  />
-                </div>
-
-                <div className="field">
-                  <label htmlFor="date">Data *</label>
-                  <input
-                    id="date"
-                    className="control"
-                    type="date"
-                    min={today()}
-                    value={form.date}
-                    onChange={(event) =>
-                      updateField("date", event.target.value)
-                    }
-                    required
-                  />
-                </div>
-
-                <div className="field">
-                  <label htmlFor="time">Horário *</label>
-                  <input
-                    id="time"
-                    className="control"
-                    type="time"
-                    value={form.time}
-                    onChange={(event) =>
-                      updateField("time", event.target.value)
-                    }
-                    required
-                  />
-                </div>
-
-                <div className="field full">
-                  <label htmlFor="notes">Observações</label>
-                  <textarea
-                    id="notes"
-                    className="control"
-                    rows={3}
-                    value={form.notes}
-                    onChange={(event) =>
-                      updateField("notes", event.target.value)
-                    }
-                    maxLength={500}
-                    placeholder="Observações sobre o atendimento..."
-                  />
-                </div>
-              </div>
-
-              {error && <p className="error">{error}</p>}
-
-              <div className="modal-footer">
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => setModalOpen(false)}
-                >
-                  Voltar
-                </button>
-
-                <button type="submit" className="primary">
-                  {editingId ? "Salvar alterações" : "Cadastrar horário"}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
-      )}
     </main>
   );
 }

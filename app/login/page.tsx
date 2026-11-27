@@ -1,11 +1,11 @@
 
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { Suspense, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "../../utils/supabase/client";
 
-export default function LoginPage() {
+function LoginForm() {
   const supabase = createClient();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -21,7 +21,6 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      // Autenticação
       const { data, error: loginError } =
         await supabase.auth.signInWithPassword({
           email,
@@ -30,17 +29,11 @@ export default function LoginPage() {
 
       if (loginError) throw loginError;
 
-      // Verificação do administrador
       const { data: admin, error: adminError } = await supabase
         .from("admin_users")
         .select("id, name")
         .eq("id", data.user.id)
         .maybeSingle();
-
-      // Diagnóstico
-      console.log("UUID autenticado:", data.user.id);
-      console.log("Resultado administrador:", admin);
-      console.log("Erro administrador:", adminError);
 
       if (adminError) {
         throw new Error(
@@ -49,15 +42,14 @@ export default function LoginPage() {
       }
 
       if (!admin) {
+        await supabase.auth.signOut();
         throw new Error(
           "Consulta realizada, mas nenhum administrador foi encontrado."
         );
       }
 
-      // Acesso autorizado
       router.replace("/dashboard");
       router.refresh();
-
     } catch (err) {
       console.error("Erro no login:", err);
 
@@ -135,5 +127,19 @@ export default function LoginPage() {
         </form>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-screen items-center justify-center bg-[#101510] text-white">
+          Carregando...
+        </main>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }

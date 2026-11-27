@@ -1,9 +1,39 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createClient } from "@/utils/supabase/client";
 
 type SelectionStyle = "clock" | "list";
+type BusyInterval = {
+  start_at: string;
+  end_at: string;
+};
+
+function getStoredId(key: string): string {
+  const stored = sessionStorage.getItem(key);
+  if (!stored) return "";
+
+  try {
+    const parsed = JSON.parse(stored);
+
+    if (typeof parsed === "string") return parsed;
+
+    if (parsed && typeof parsed === "object") {
+      return (
+        parsed.id ??
+        parsed.professional_id ??
+        parsed.service_id ??
+        parsed.uuid ??
+        ""
+      );
+    }
+  } catch {
+    return stored;
+  }
+
+  return "";
+}
 
 const weekdays = ["D", "S", "T", "Q", "Q", "S", "S"];
 
@@ -45,6 +75,14 @@ export default function DatePage() {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
+  const [professionalId, setProfessionalId] = useState("");
+  const [serviceId, setServiceId] = useState("");
+  const [busyIntervals, setBusyIntervals] = useState<BusyInterval[]>([]);
+  const [serviceDuration, setServiceDuration] = useState(0);
+  const [loadingAvailability, setLoadingAvailability] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState("");
+
+  const supabase = useMemo(() => createClient(), []);
 
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -55,8 +93,86 @@ export default function DatePage() {
     setDarkMode(dark);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     setDate(getDateKey(new Date()));
+
+    setProfessionalId(
+      getStoredId("thawblack-selected-professional")
+    );
+
+    setServiceId(
+      getStoredId("thawblack-selected-service")
+    );
   }, []);
 
+  useEffect(() => {
+    if (!date || !professionalId || !serviceId) {
+      setBusyIntervals([]);
+      setServiceDuration(0);
+      setAvailabilityError(
+        date && (!professionalId || !serviceId)
+          ? "Não foi possível identificar o profissional ou serviço selecionado. Volte uma etapa e selecione novamente."
+          : ""
+      );
+      setLoadingAvailability(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadAvailability() {
+      setLoadingAvailability(true);
+      setAvailabilityError("");
+      setBusyIntervals([]);
+      setServiceDuration(0);
+
+      const [availabilityResult, serviceResult] = await Promise.all([
+        supabase.rpc("get_public_professional_availability", {
+          p_professional_id: professionalId,
+          p_date: date,
+        }),
+
+        supabase
+          .from("professional_services")
+          .select("duration_minutes")
+          .eq("professional_id", professionalId)
+          .eq("service_id", serviceId)
+          .maybeSingle(),
+      ]);
+
+      if (cancelled) return;
+
+      if (availabilityResult.error || serviceResult.error) {
+        console.error(
+          "Erro ao consultar disponibilidade:",
+          availabilityResult.error ?? serviceResult.error
+        );
+
+        setAvailabilityError(
+          "Não foi possível consultar os horários. Tente selecionar a data novamente."
+        );
+        setLoadingAvailability(false);
+        return;
+      }
+
+      if (!serviceResult.data) {
+        setAvailabilityError(
+          "Não foi possível encontrar a duração deste serviço para o profissional selecionado."
+        );
+        setLoadingAvailability(false);
+        return;
+      }
+
+      setBusyIntervals(availabilityResult.data ?? []);
+      setServiceDuration(serviceResult.data.duration_minutes);
+      setLoadingAvailability(false);
+    }
+
+    loadAvailability();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [date, professionalId, serviceId]);
+  
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -74,6 +190,31 @@ export default function DatePage() {
     month: "long",
     year: "numeric",
   });
+
+  function isTimeUnavailable(value: string) {
+    if (
+      loadingAvailability ||
+      !!availabilityError ||
+      serviceDuration <= 0 ||
+      !date
+    ) {
+      return true;
+    }
+
+    const start = new Date(`${date}T${value}:00-03:00`).getTime();
+    const end = start + serviceDuration * 60 * 1000;
+
+    // Impede selecionar horários que já passaram.
+    if (start <= Date.now()) return true;
+
+    return busyIntervals.some((appointment) => {
+      const busyStart = new Date(appointment.start_at).getTime();
+      const busyEnd = new Date(appointment.end_at).getTime();
+
+      // Bloqueia qualquer sobreposição entre os atendimentos.
+      return start < busyEnd && end > busyStart;
+    });
+  }
 
   function toggleTheme() {
     const next = !darkMode;
@@ -242,10 +383,10 @@ export default function DatePage() {
               <p className="selected-date-label">
                 {selectedDate
                   ? selectedDate.toLocaleDateString("pt-BR", {
-                      weekday: "long",
-                      day: "2-digit",
-                      month: "long",
-                    })
+                    weekday: "long",
+                    day: "2-digit",
+                    month: "long",
+                  })
                   : "Selecione uma data"}
               </p>
             </section>
@@ -285,6 +426,18 @@ export default function DatePage() {
                 </div>
               </div>
 
+              {loadingAvailability && (
+                <p className="clock-hint">
+                  Consultando horários disponíveis...
+                </p>
+              )}
+
+              {availabilityError && (
+                <p className="clock-hint" role="alert">
+                  {availabilityError}
+                </p>
+              )}
+
               {style === "clock" ? (
                 <div className="clock-picker">
                   <div className="clock-face">
@@ -300,14 +453,14 @@ export default function DatePage() {
                         <button
                           key={value}
                           type="button"
-                          className={`clock-time ${
-                            time === value ? "selected" : ""
-                          }`}
+                          className={`clock-time ${time === value ? "selected" : ""
+                            }`}
                           style={{
                             left: `${x}%`,
                             top: `${y}%`,
                           }}
                           onClick={() => selectTime(value)}
+                          disabled={isTimeUnavailable(value)}
                           aria-pressed={time === value}
                           aria-label={`Selecionar ${formatTime(value)}`}
                         >
@@ -328,7 +481,7 @@ export default function DatePage() {
                   </div>
 
                   <p className="clock-hint">
-                    Atendimento das 9h às 20h. Pausa das 12h às 13h.
+                    Os horários indisponíveis não podem ser selecionados.
                   </p>
                 </div>
               ) : (
@@ -337,10 +490,10 @@ export default function DatePage() {
                     <button
                       key={value}
                       type="button"
-                      className={`time-slot ${
-                        time === value ? "selected" : ""
-                      }`}
+                      className={`time-slot ${time === value ? "selected" : ""
+                        }`}
                       onClick={() => selectTime(value)}
+                      disabled={isTimeUnavailable(value)}
                       aria-pressed={time === value}
                     >
                       {formatTime(value)}
@@ -354,10 +507,10 @@ export default function DatePage() {
                   <button
                     key={value}
                     type="button"
-                    className={`time-slot ${
-                      time === value ? "selected" : ""
-                    }`}
+                    className={`time-slot ${time === value ? "selected" : ""
+                      }`}
                     onClick={() => selectTime(value)}
+                    disabled={isTimeUnavailable(value)}
                     aria-pressed={time === value}
                   >
                     {formatTime(value)}
@@ -380,7 +533,13 @@ export default function DatePage() {
           <button
             type="button"
             className="btn-primary date-continue"
-            disabled={!date || !time}
+            disabled={
+              !date ||
+              !time ||
+              loadingAvailability ||
+              !!availabilityError ||
+              isTimeUnavailable(time)
+            }
             onClick={continueBooking}
           >
             Continuar →
